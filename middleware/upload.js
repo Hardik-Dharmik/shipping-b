@@ -1,11 +1,26 @@
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
-// Create uploads directory if it doesn't exist
-const uploadsDir = path.join(__dirname, '../uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+// Determine uploads directory based on environment
+// On Vercel/serverless, use /tmp (writable), otherwise use local uploads folder
+const isVercel = process.env.VERCEL_ENV || process.env.VERCEL;
+const isServerless = process.env.AWS_LAMBDA_FUNCTION_NAME || isVercel;
+
+const uploadsDir = isServerless 
+  ? path.join(os.tmpdir(), 'uploads') // Use /tmp on serverless
+  : path.join(__dirname, '../uploads'); // Use local folder for development
+
+// Create uploads directory if it doesn't exist (only if we can write)
+try {
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+} catch (error) {
+  // If directory creation fails, log but don't crash
+  // On serverless, /tmp should already exist
+  console.warn('Could not create uploads directory:', error.message);
 }
 
 // Configure multer for file storage
