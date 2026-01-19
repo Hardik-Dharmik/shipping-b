@@ -5,6 +5,7 @@ const supabase = require("./supabase");
 const registerRoutes = require("./routes/register");
 const authRoutes = require("./routes/auth");
 const adminRoutes = require("./routes/admin");
+const shippingRoutes = require("./routes/shipping");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -27,6 +28,7 @@ app.use(express.urlencoded({
 app.use("/api/register", registerRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/shipping", shippingRoutes);
 
 // test route
 app.get("/", (req, res) => {
