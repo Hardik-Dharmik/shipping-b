@@ -56,9 +56,16 @@ app.get("/api/test-supabase", async (req, res) => {
 // Export the app for Vercel serverless functions
 module.exports = app;
 
-// Only start server if not in Vercel environment
-if (process.env.VERCEL !== '1') {
+// Only start server if running locally (not in Vercel/serverless environment)
+// Vercel provides VERCEL_ENV in production/preview environments
+// Check if we're NOT in a serverless environment
+const isVercel = process.env.VERCEL_ENV || process.env.VERCEL;
+const isServerless = process.env.AWS_LAMBDA_FUNCTION_NAME || isVercel;
+
+if (!isServerless) {
   app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
+} else {
+  console.log('Running on Vercel - serverless mode');
 }
