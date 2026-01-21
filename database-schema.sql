@@ -43,3 +43,20 @@ $$ language 'plpgsql';
 CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TABLE orders (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id),
+  order_data JSONB NOT NULL,
+  status TEXT DEFAULT 'CREATED',
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+ALTER TABLE orders
+ADD COLUMN awb_number TEXT UNIQUE,
+ADD COLUMN awb_pdf_url TEXT;
+
+ALTER TABLE orders
+ADD COLUMN carrier JSONB NOT NULL;
+
+
+

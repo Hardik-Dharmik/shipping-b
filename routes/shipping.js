@@ -1,6 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const { authenticateToken } = require('./auth');
+const { supabaseAdmin } = require('../supabase');
+const generateOrderPdf = require('../utils/generateOrderPdf');
+const uploadAwbToSupabase = require('../utils/uploadAWBtoSupabase');
+
+const generateAWB = () => {
+  return `AWB-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+};
+
 
 // Calculate shipping quote endpoint
 router.post('/quote', authenticateToken, async (req, res) => {
@@ -205,6 +213,155 @@ router.post('/quote', authenticateToken, async (req, res) => {
     });
   }
 });
+
+// Create order endpoint
+router.post('/order', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id; 
+
+    const {
+      pickupCountry,
+      pickupPincode,
+      destinationCountry,
+      destinationPincode,
+      actualWeight,
+      boxes,
+      shipmentValue,
+      carrier
+    } = req.body;
+
+    if (
+      !pickupCountry ||
+      !pickupPincode ||
+      !destinationCountry ||
+      !destinationPincode ||
+      !actualWeight ||
+      !carrier ||
+      !Array.isArray(boxes) ||
+      boxes.length === 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields'
+      });
+    }
+
+    const declaredWeight = parseFloat(actualWeight);
+    if (isNaN(declaredWeight) || declaredWeight <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'actualWeight must be a positive number'
+      });
+    }
+
+    const DIVISOR = 5000;
+    let totalChargeableWeight = 0;
+
+    const processedBoxes = boxes.map((box, index) => {
+      const { quantity, actualWeight, length, breadth, height } = box;
+
+      if (!quantity || !actualWeight || !length || !breadth || !height) {
+        throw new Error(`Invalid box at index ${index}`);
+      }
+
+      const volumetric = (length * breadth * height) / DIVISOR;
+      const chargeable = Math.max(actualWeight, volumetric);
+
+      totalChargeableWeight += chargeable * quantity;
+
+      return {
+        quantity,
+        actualWeight,
+        dimensions: { length, breadth, height, unit: 'cm' },
+        volumetricWeight: Number(volumetric.toFixed(2)),
+        chargeableWeight: Number(chargeable.toFixed(2))
+      };
+    });
+
+    const orderPayload = {
+      orderId: `ORD-${Date.now()}`,
+      user: {
+        id: userId,
+        name: req.user.name,
+        company: req.user.company_name
+      },
+      pickup: { country: pickupCountry, pincode: pickupPincode },
+      destination: { country: destinationCountry, pincode: destinationPincode },
+      weight: {
+        declared: declaredWeight,
+        chargeable: Number(totalChargeableWeight.toFixed(2)),
+        unit: 'kg'
+      },
+      boxes: processedBoxes,
+      shipmentValue: shipmentValue
+        ? { value: shipmentValue, currency: 'AED' }
+        : null,
+      status: 'CREATED',
+      createdAt: new Date().toISOString()
+    };
+
+    const awbNumber = generateAWB();
+
+    orderPayload.awb_number = awbNumber;
+
+    // Generate PDF
+    const pdfBuffer = await generateOrderPdf(orderPayload);
+
+    // Upload PDF
+    const pdfUrl = await uploadAwbToSupabase(
+      supabaseAdmin,
+      pdfBuffer,
+      awbNumber
+    );
+
+    // Save order
+    const { data, error } = await supabaseAdmin
+      .from('orders')
+      .insert({
+        user_id: userId,
+        awb_number: awbNumber,
+        awb_pdf_url: pdfUrl,
+        order_data: orderPayload,
+        carrier: carrier,
+        status: 'CREATED'
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return res.status(201).json({
+      success: true,
+      message: 'Order created successfully',
+      data
+    });
+  } catch (error) {
+    console.error('Create order error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+router.get('/orders', authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+
+  const { data, error } = await supabaseAdmin
+    .from('orders')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+
+  res.json({ success: true, data });
+});
+
+
+
 
 module.exports = router;
 
