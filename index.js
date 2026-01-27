@@ -6,6 +6,7 @@ const registerRoutes = require("./routes/register");
 const authRoutes = require("./routes/auth");
 const adminRoutes = require("./routes/admin");
 const shippingRoutes = require("./routes/shipping");
+const ticketRoutes = require("./routes/tickets");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -29,6 +30,7 @@ app.use("/api/register", registerRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/shipping", shippingRoutes);
+app.use("/api/tickets", ticketRoutes);
 
 // test route
 app.get("/", (req, res) => {

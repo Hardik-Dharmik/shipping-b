@@ -58,5 +58,57 @@ ADD COLUMN awb_pdf_url TEXT;
 ALTER TABLE orders
 ADD COLUMN carrier JSONB NOT NULL;
 
+create table if not exists tickets (
+  id uuid primary key default gen_random_uuid(),
 
+  awb_number text not null unique,
 
+  order_id uuid not null,
+  -- add FK later if needed
+  -- references orders(id) on delete cascade,
+
+  user_id uuid not null
+    references users(id)
+    on delete cascade,
+
+  -- ticket classification
+  category text not null,
+  subcategory text not null,
+
+  status text not null default 'open'
+    check (status in ('open', 'pending', 'closed')),
+
+  -- messages stored as JSON array
+  messages jsonb not null default '[]'::jsonb,
+
+  created_at timestamp with time zone
+    default timezone('utc', now()) not null,
+
+  updated_at timestamp with time zone
+    default timezone('utc', now()) not null
+);
+
+create index if not exists tickets_awb_idx
+on tickets (awb_number);
+
+create index if not exists tickets_user_idx
+on tickets (user_id);
+
+create index if not exists tickets_category_idx
+on tickets (category);
+
+create index if not exists tickets_status_idx
+on tickets (status);
+
+create or replace function update_updated_at_column()
+returns trigger as $$
+begin
+  new.updated_at = timezone('utc', now());
+  return new;
+end;
+$$ language plpgsql;
+
+create trigger update_tickets_updated_at
+before update on tickets
+for each row
+execute function update_updated_at_column();
