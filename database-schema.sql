@@ -112,3 +112,7 @@ create trigger update_tickets_updated_at
 before update on tickets
 for each row
 execute function update_updated_at_column();
+
+ALTER TABLE tickets
+ADD COLUMN unread_user_count INTEGER DEFAULT 0,
+ADD COLUMN unread_admin_count INTEGER DEFAULT 0;

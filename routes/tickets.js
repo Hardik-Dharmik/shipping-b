@@ -116,6 +116,8 @@ router.get('/my-tickets', authenticateToken, async (req, res) => {
         status,
         created_at,
         updated_at,
+        unread_admin_count,
+        unread_user_count,
         users (
           name
         )
@@ -157,6 +159,7 @@ router.get('/:ticketId/messages', authenticateToken, async (req, res) => {
     try {
       const { ticketId } = req.params;
       const userId = req.user.id;
+const role = req.user.role;
 
       // Fetch ticket messages with ownership check
       let query = supabaseAdmin
@@ -172,6 +175,16 @@ router.get('/:ticketId/messages', authenticateToken, async (req, res) => {
           error: 'Ticket not found or access denied'
         });
       }
+
+      const resetColumn =
+  role === 'admin'
+    ? 'unread_admin_count'
+    : 'unread_user_count';
+
+await supabaseAdmin
+  .from('tickets')
+  .update({ [resetColumn]: 0 })
+  .eq('id', ticketId);
 
       res.json({
         success: true,
@@ -198,11 +211,6 @@ router.post(
       const { ticketId } = req.params;
       const { message } = req.body;
       const file = req.file;
-
-      console.log(
-        'Request body:', req.body,
-        'File:', file
-      )
 
       const userId = req.user.id;
       const userRole = req.user.role; // 'user' | 'admin'
@@ -291,6 +299,30 @@ router.post(
         .eq('id', ticketId);
 
       if (updateError) throw updateError;
+
+      const unreadColumn =
+  userRole === 'user'
+    ? 'unread_admin_count'
+    : 'unread_user_count';
+
+// fetch current count
+const { data: currentTicket, error: countErr } = await supabaseAdmin
+  .from('tickets')
+  .select(unreadColumn)
+  .eq('id', ticketId)
+  .single();
+
+if (countErr) throw countErr;
+
+// increment safely
+await supabaseAdmin
+  .from('tickets')
+  .update({
+    [unreadColumn]: (currentTicket[unreadColumn] || 0) + 1
+  })
+  .eq('id', ticketId);
+
+
 
       res.json({
         success: true,
