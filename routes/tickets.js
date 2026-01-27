@@ -26,6 +26,7 @@ router.post('/create', authenticateToken, async (req, res) => {
   try {
     const { awb_number, category, subcategory } = req.body;
     const userId = req.user.id;
+    const userRole = req.user.role; 
 
     if (!awb_number || !category || !subcategory) {
       return res.status(400).json({
@@ -49,7 +50,7 @@ router.post('/create', authenticateToken, async (req, res) => {
     }
 
     /* 2️⃣ Ownership check */
-    if (order.user_id !== userId) {
+    if (userRole !== 'admin' && order.user_id !== userId) {
       return res.status(403).json({
         success: false,
         error: 'You are not authorized to create a ticket for this order'
@@ -62,7 +63,7 @@ router.post('/create', authenticateToken, async (req, res) => {
       .insert({
         awb_number,
         order_id: order.id, // derived securely
-        user_id: userId,
+        user_id: order.user_id,
         category,
         subcategory,
         status: 'open',
