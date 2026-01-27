@@ -22,7 +22,9 @@ router.post('/quote', authenticateToken, async (req, res) => {
       length,
       breadth,
       height,
-      shipmentValue
+      shipmentValue,
+      requireBOE,
+      requireDO
     } = req.body;
 
     // Validate required fields
@@ -69,6 +71,33 @@ router.post('/quote', authenticateToken, async (req, res) => {
       }
     }
 
+    // Calculate additional charges
+    let additionalCharges = 0;
+
+    // 1. REQUIRE BOE (optional charges 100aed)
+    if (requireBOE === true || requireBOE === 'true') {
+      additionalCharges += 100;
+    }
+
+    // 2. REQUIRE D/O (optional charges 100aed)
+    if (requireDO === true || requireDO === 'true') {
+      additionalCharges += 100;
+    }
+
+    // 3. EXPORT DECLARATION (mandatory for export booking from UAE) - 120aed
+    const isUae = (country) => {
+      if (!country) return false;
+      const c = country.toLowerCase().trim();
+      return c === 'uae' || c === 'united arab emirates';
+    };
+
+    // Check if it's an export from UAE (Pickup is UAE, Destination is NOT UAE)
+    const isExportFromUae = isUae(pickupCountry) && !isUae(destinationCountry);
+
+    if (isExportFromUae) {
+      additionalCharges += 120;
+    }
+
     // Calculate shipping costs based on weight (cost = weight * rate)
     // DHL: 10 dirham per kg
     // FedEx: 8 dirham per kg
@@ -77,9 +106,9 @@ router.post('/quote', authenticateToken, async (req, res) => {
     const fedexRate = 8;
     const upsRate = 6;
     
-    const dhlCost = weight * dhlRate;
-    const fedexCost = weight * fedexRate;
-    const upsCost = weight * upsRate;
+    const dhlCost = (weight * dhlRate) + additionalCharges;
+    const fedexCost = (weight * fedexRate) + additionalCharges;
+    const upsCost = (weight * upsRate) + additionalCharges;
 
     // Generate random estimated delivery times (in days)
     // Random between 3-7 days for international shipping
@@ -227,7 +256,8 @@ router.post('/order', authenticateToken, async (req, res) => {
       actualWeight,
       boxes,
       shipmentValue,
-      carrier
+      carrier,
+      compliance
     } = req.body;
 
     if (
@@ -278,6 +308,65 @@ router.post('/order', authenticateToken, async (req, res) => {
       };
     });
 
+    // Process compliance data
+    let complianceData = {
+      requireBOE: false,
+      requireDO: false,
+      exportDeclaration: false,
+      exportDeclarationCharge: 0,
+      dutyExemption: false
+    };
+
+    let totalComplianceCharges = 0;
+
+    if (compliance) {
+      // 1. REQUIRE BOE
+      if (compliance.requireBOE === true || compliance.requireBOE === 'true') {
+        complianceData.requireBOE = true;
+        totalComplianceCharges += 100;
+      }
+
+      // 2. REQUIRE D/O
+      if (compliance.requireDO === true || compliance.requireDO === 'true') {
+        complianceData.requireDO = true;
+        totalComplianceCharges += 100;
+      }
+
+      // 4. DUTY EXEMPTION
+      if (compliance.dutyExemption === true || compliance.dutyExemption === 'true') {
+        complianceData.dutyExemption = true;
+      }
+    }
+
+    // 3. EXPORT DECLARATION (mandatory for export booking from UAE)
+    const isUae = (country) => {
+      if (!country) return false;
+      const c = country.toLowerCase().trim();
+      return c === 'uae' || c === 'united arab emirates';
+    };
+
+    const isExportFromUae = isUae(pickupCountry) && !isUae(destinationCountry);
+
+    if (isExportFromUae) {
+      complianceData.exportDeclaration = true;
+      complianceData.exportDeclarationCharge = 120;
+      totalComplianceCharges += 120;
+    } else if (compliance && (compliance.exportDeclaration === true || compliance.exportDeclaration === 'true')) {
+      // Allow it if explicitly requested, even if not mandatory? Or strictly enforce logic?
+      // Assuming if passed, we keep it, but ensure mandatory rule is respected above.
+      complianceData.exportDeclaration = true;
+      complianceData.exportDeclarationCharge = 120; // Default charge if not provided, or should we use input?
+      if (compliance.exportDeclarationCharge) {
+        complianceData.exportDeclarationCharge = parseFloat(compliance.exportDeclarationCharge) || 120;
+      }
+      totalComplianceCharges += complianceData.exportDeclarationCharge;
+    }
+
+    // Update carrier cost with compliance charges
+    if (carrier && (carrier.cost !== undefined && carrier.cost !== null)) {
+      carrier.cost = parseFloat(carrier.cost) + totalComplianceCharges;
+    }
+
     const orderPayload = {
       orderId: `ORD-${Date.now()}`,
       user: {
@@ -287,6 +376,7 @@ router.post('/order', authenticateToken, async (req, res) => {
       },
       pickup: { country: pickupCountry, pincode: pickupPincode },
       destination: { country: destinationCountry, pincode: destinationPincode },
+      compliance: complianceData,
       weight: {
         declared: declaredWeight,
         chargeable: Number(totalChargeableWeight.toFixed(2)),
