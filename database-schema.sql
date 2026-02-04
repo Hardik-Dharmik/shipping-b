@@ -83,6 +83,14 @@ create table if not exists tickets (
   -- messages stored as JSON array
   messages jsonb not null default '[]'::jsonb,
 
+  -- who created the ticket (admin or user)
+  created_by_id uuid
+    references users(id)
+    on delete set null,
+
+  created_by_role text not null default 'user'
+    check (created_by_role in ('user', 'admin')),
+
   created_at timestamp with time zone
     default timezone('utc', now()) not null,
 
@@ -101,6 +109,9 @@ on tickets (category);
 
 create index if not exists tickets_status_idx
 on tickets (status);
+
+create index if not exists tickets_created_by_role_idx
+on tickets (created_by_role);
 
 create or replace function update_updated_at_column()
 returns trigger as $$
@@ -124,3 +135,11 @@ ALTER TABLE tickets DROP CONSTRAINT IF EXISTS tickets_awb_number_key;
 ALTER TABLE orders
 ADD COLUMN IF NOT EXISTS invoice_urls JSONB DEFAULT '[]'::jsonb,
 ADD COLUMN IF NOT EXISTS packing_list_urls JSONB DEFAULT '[]'::jsonb;
+
+ALTER TABLE tickets
+  ADD COLUMN IF NOT EXISTS created_by_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS created_by_role text NOT NULL DEFAULT 'user'
+    CHECK (created_by_role IN ('user', 'admin'));
+
+CREATE INDEX IF NOT EXISTS tickets_created_by_role_idx
+  ON tickets (created_by_role);

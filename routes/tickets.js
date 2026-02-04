@@ -64,6 +64,8 @@ router.post('/create', authenticateToken, async (req, res) => {
         awb_number,
         order_id: order.id, // derived securely
         user_id: order.user_id,
+        created_by_id: userId,
+        created_by_role: userRole,
         category,
         subcategory,
         status: 'open',
@@ -108,11 +110,13 @@ router.get('/my-tickets', authenticateToken, async (req, res) => {
         category,
         subcategory,
         status,
+        created_by_id,
+        created_by_role,
         created_at,
         updated_at,
         unread_admin_count,
         unread_user_count,
-        users (
+        users:users!tickets_user_id_fkey (
           name
         )
       `)
@@ -336,11 +340,11 @@ await supabaseAdmin
 // Get all tickets (Admin only)
 router.get('/all', authenticateToken, isAdmin, async (req, res) => {
   try {
-    const { data, error } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
       .from('tickets')
       .select(`
         *,
-        users:user_id (name, email, company_name)
+        users:users!tickets_user_id_fkey (name, email, company_name)
       `)
       .order('created_at', { ascending: false });
 
