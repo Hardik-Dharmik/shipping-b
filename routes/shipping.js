@@ -1,4 +1,6 @@
 const express = require('express');
+const multer = require('multer');
+const path = require('path');
 const router = express.Router();
 const { authenticateToken } = require('./auth');
 const { supabaseAdmin } = require('../supabase');
@@ -7,6 +9,52 @@ const uploadAwbToSupabase = require('../utils/uploadAWBtoSupabase');
 
 const generateAWB = () => {
   return `AWB-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+};
+
+const orderUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB per file
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png|gif|pdf|doc|docx|txt/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+
+    if (mimetype && extname) {
+      return cb(null, true);
+    }
+    cb(new Error('Only images, PDFs, and documents are allowed!'));
+  }
+});
+
+const sanitizeFileName = (name) => {
+  return name.replace(/[^a-zA-Z0-9._-]/g, '_');
+};
+
+const uploadOrderDocuments = async (files, awbNumber, folder) => {
+  if (!files || files.length === 0) return [];
+
+  const uploads = files.map(async (file) => {
+    const safeName = sanitizeFileName(file.originalname || 'document');
+    const filePath = `orders/${awbNumber}/${folder}/${Date.now()}_${safeName}`;
+
+    const { error } = await supabaseAdmin.storage
+      .from('order-documents')
+      .upload(filePath, file.buffer, {
+        contentType: file.mimetype
+      });
+
+    if (error) throw error;
+
+    const { data } = supabaseAdmin.storage
+      .from('order-documents')
+      .getPublicUrl(filePath);
+
+    return data.publicUrl;
+  });
+
+  return Promise.all(uploads);
 };
 
 
@@ -244,21 +292,44 @@ router.post('/quote', authenticateToken, async (req, res) => {
 });
 
 // Create order endpoint
-router.post('/order', authenticateToken, async (req, res) => {
+router.post(
+  '/order',
+  authenticateToken,
+  orderUpload.fields([
+    { name: 'invoices', maxCount: 10 },
+    { name: 'packing-list', maxCount: 10 },
+    { name: 'packing_list', maxCount: 10 },
+    { name: 'packing-lists', maxCount: 10 }
+  ]),
+  async (req, res) => {
   try {
     const userId = req.user.id; 
+    console.log('Create order debug: body keys', Object.keys(req.body || {}));
+    console.log('Create order debug: file fields', Object.keys(req.files || {}));
 
-    const {
-      pickupCountry,
-      pickupPincode,
-      destinationCountry,
-      destinationPincode,
-      actualWeight,
-      boxes,
-      shipmentValue,
-      carrier,
-      compliance
-    } = req.body;
+    const parseJsonField = (value, fallback) => {
+      if (value === undefined || value === null || value === '') return fallback;
+      if (typeof value !== 'string') return value;
+      try {
+        return JSON.parse(value);
+      } catch (err) {
+        throw new Error('Invalid JSON in multipart field');
+      }
+    };
+
+    const orderFromBody = parseJsonField(req.body.order, null);
+    const orderSource = orderFromBody || req.body;
+
+    const pickupCountry = orderSource.pickupCountry;
+    const pickupPincode = orderSource.pickupPincode;
+    const destinationCountry = orderSource.destinationCountry;
+    const destinationPincode = orderSource.destinationPincode;
+    const actualWeight = orderSource.actualWeight;
+    const shipmentValue = orderSource.shipmentValue;
+
+    const boxes = parseJsonField(orderSource.boxes, []);
+    const parsedCarrier = parseJsonField(orderSource.carrier, null);
+    const parsedCompliance = parseJsonField(orderSource.compliance, null);
 
     if (
       !pickupCountry ||
@@ -266,13 +337,25 @@ router.post('/order', authenticateToken, async (req, res) => {
       !destinationCountry ||
       !destinationPincode ||
       !actualWeight ||
-      !carrier ||
+      !parsedCarrier ||
       !Array.isArray(boxes) ||
       boxes.length === 0
     ) {
+      const missingFields = [];
+      if (!pickupCountry) missingFields.push('pickupCountry');
+      if (!pickupPincode) missingFields.push('pickupPincode');
+      if (!destinationCountry) missingFields.push('destinationCountry');
+      if (!destinationPincode) missingFields.push('destinationPincode');
+      if (!actualWeight) missingFields.push('actualWeight');
+      if (!parsedCarrier) missingFields.push('carrier');
+      if (!Array.isArray(boxes)) missingFields.push('boxes (not an array)');
+      if (Array.isArray(boxes) && boxes.length === 0) missingFields.push('boxes (empty)');
+
+      console.warn('Create order missing fields:', missingFields);
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields'
+        error: 'Missing required fields',
+        missing: missingFields
       });
     }
 
@@ -319,21 +402,21 @@ router.post('/order', authenticateToken, async (req, res) => {
 
     let totalComplianceCharges = 0;
 
-    if (compliance) {
+    if (parsedCompliance) {
       // 1. REQUIRE BOE
-      if (compliance.requireBOE === true || compliance.requireBOE === 'true') {
+      if (parsedCompliance.requireBOE === true || parsedCompliance.requireBOE === 'true') {
         complianceData.requireBOE = true;
         totalComplianceCharges += 100;
       }
 
       // 2. REQUIRE D/O
-      if (compliance.requireDO === true || compliance.requireDO === 'true') {
+      if (parsedCompliance.requireDO === true || parsedCompliance.requireDO === 'true') {
         complianceData.requireDO = true;
         totalComplianceCharges += 100;
       }
 
       // 4. DUTY EXEMPTION
-      if (compliance.dutyExemption === true || compliance.dutyExemption === 'true') {
+      if (parsedCompliance.dutyExemption === true || parsedCompliance.dutyExemption === 'true') {
         complianceData.dutyExemption = true;
       }
     }
@@ -351,20 +434,20 @@ router.post('/order', authenticateToken, async (req, res) => {
       complianceData.exportDeclaration = true;
       complianceData.exportDeclarationCharge = 120;
       totalComplianceCharges += 120;
-    } else if (compliance && (compliance.exportDeclaration === true || compliance.exportDeclaration === 'true')) {
+    } else if (parsedCompliance && (parsedCompliance.exportDeclaration === true || parsedCompliance.exportDeclaration === 'true')) {
       // Allow it if explicitly requested, even if not mandatory? Or strictly enforce logic?
       // Assuming if passed, we keep it, but ensure mandatory rule is respected above.
       complianceData.exportDeclaration = true;
       complianceData.exportDeclarationCharge = 120; // Default charge if not provided, or should we use input?
-      if (compliance.exportDeclarationCharge) {
-        complianceData.exportDeclarationCharge = parseFloat(compliance.exportDeclarationCharge) || 120;
+      if (parsedCompliance.exportDeclarationCharge) {
+        complianceData.exportDeclarationCharge = parseFloat(parsedCompliance.exportDeclarationCharge) || 120;
       }
       totalComplianceCharges += complianceData.exportDeclarationCharge;
     }
 
     // Update carrier cost with compliance charges
-    if (carrier && (carrier.cost !== undefined && carrier.cost !== null)) {
-      carrier.cost = parseFloat(carrier.cost) + totalComplianceCharges;
+    if (parsedCarrier && (parsedCarrier.cost !== undefined && parsedCarrier.cost !== null)) {
+      parsedCarrier.cost = parseFloat(parsedCarrier.cost) + totalComplianceCharges;
     }
 
     const orderPayload = {
@@ -394,6 +477,21 @@ router.post('/order', authenticateToken, async (req, res) => {
 
     orderPayload.awb_number = awbNumber;
 
+    const invoiceFiles = req.files?.invoices || [];
+    const packingListFiles = [
+      ...(req.files?.['packing-list'] || []),
+      ...(req.files?.packing_list || []),
+      ...(req.files?.['packing-lists'] || [])
+    ];
+
+    const [invoiceUrls, packingListUrls] = await Promise.all([
+      uploadOrderDocuments(invoiceFiles, awbNumber, 'invoices'),
+      uploadOrderDocuments(packingListFiles, awbNumber, 'packing-list')
+    ]);
+
+    orderPayload.invoice_urls = invoiceUrls;
+    orderPayload.packing_list_urls = packingListUrls;
+
     // Generate PDF
     const pdfBuffer = await generateOrderPdf(orderPayload);
 
@@ -411,8 +509,10 @@ router.post('/order', authenticateToken, async (req, res) => {
         user_id: userId,
         awb_number: awbNumber,
         awb_pdf_url: pdfUrl,
+        invoice_urls: invoiceUrls,
+        packing_list_urls: packingListUrls,
         order_data: orderPayload,
-        carrier: carrier,
+        carrier: parsedCarrier,
         status: 'CREATED'
       })
       .select()
@@ -432,6 +532,31 @@ router.post('/order', authenticateToken, async (req, res) => {
       error: error.message
     });
   }
+});
+
+// Multer error logger for this router
+router.use((err, req, res, next) => {
+  if (err && err.name === 'MulterError') {
+    console.error('Multer error:', {
+      code: err.code,
+      field: err.field,
+      message: err.message
+    });
+    return res.status(400).json({
+      success: false,
+      error: err.message,
+      code: err.code,
+      field: err.field
+    });
+  }
+  if (err) {
+    console.error('Shipping router error:', err);
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Internal server error'
+    });
+  }
+  next();
 });
 
 router.get('/orders', authenticateToken, async (req, res) => {

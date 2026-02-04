@@ -53,7 +53,9 @@ CREATE TABLE orders (
 
 ALTER TABLE orders
 ADD COLUMN awb_number TEXT UNIQUE,
-ADD COLUMN awb_pdf_url TEXT;
+ADD COLUMN awb_pdf_url TEXT,
+ADD COLUMN invoice_urls JSONB DEFAULT '[]'::jsonb,
+ADD COLUMN packing_list_urls JSONB DEFAULT '[]'::jsonb;
 
 ALTER TABLE orders
 ADD COLUMN carrier JSONB NOT NULL;
@@ -118,3 +120,7 @@ ADD COLUMN unread_user_count INTEGER DEFAULT 0,
 ADD COLUMN unread_admin_count INTEGER DEFAULT 0;
 
 ALTER TABLE tickets DROP CONSTRAINT IF EXISTS tickets_awb_number_key;
+
+ALTER TABLE orders
+ADD COLUMN IF NOT EXISTS invoice_urls JSONB DEFAULT '[]'::jsonb,
+ADD COLUMN IF NOT EXISTS packing_list_urls JSONB DEFAULT '[]'::jsonb;
