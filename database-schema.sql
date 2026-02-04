@@ -61,7 +61,7 @@ ADD COLUMN carrier JSONB NOT NULL;
 create table if not exists tickets (
   id uuid primary key default gen_random_uuid(),
 
-  awb_number text not null unique,
+  awb_number text not null,
 
   order_id uuid not null,
   -- add FK later if needed
@@ -116,3 +116,5 @@ execute function update_updated_at_column();
 ALTER TABLE tickets
 ADD COLUMN unread_user_count INTEGER DEFAULT 0,
 ADD COLUMN unread_admin_count INTEGER DEFAULT 0;
+
+ALTER TABLE tickets DROP CONSTRAINT IF EXISTS tickets_awb_number_key;

@@ -73,12 +73,6 @@ router.post('/create', authenticateToken, async (req, res) => {
       .single();
 
     if (error) {
-      if (error.code === '23505') {
-        return res.status(409).json({
-          success: false,
-          error: 'A ticket already exists for this AWB number'
-        });
-      }
       throw error;
     }
 
