@@ -1,4 +1,4 @@
-require('dotenv').config();
+﻿require('dotenv').config();
 const express = require("express");
 const cors = require("cors");
 const supabase = require("./supabase");
@@ -7,6 +7,7 @@ const authRoutes = require("./routes/auth");
 const adminRoutes = require("./routes/admin");
 const shippingRoutes = require("./routes/shipping");
 const ticketRoutes = require("./routes/tickets");
+const billingRoutes = require("./routes/billing");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -31,10 +32,11 @@ app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/shipping", shippingRoutes);
 app.use("/api/tickets", ticketRoutes);
+app.use("/api/billing", billingRoutes);
 
 // test route
 app.get("/", (req, res) => {
-  res.send("Express backend is running 🚀");
+  res.send("Express backend is running ðŸš€");
 });
 
 // Example Supabase route - test database connection
@@ -73,3 +75,6 @@ if (!isServerless) {
 } else {
   console.log('Running on Vercel - serverless mode');
 }
+
+
+

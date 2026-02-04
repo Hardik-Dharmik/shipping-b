@@ -143,3 +143,22 @@ ALTER TABLE tickets
 
 CREATE INDEX IF NOT EXISTS tickets_created_by_role_idx
   ON tickets (created_by_role);
+
+-- Billing uploads (admin-only uploads tied to AWB)
+CREATE TABLE IF NOT EXISTS billing_uploads (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  awb_number TEXT NOT NULL,
+  billing_type TEXT NOT NULL CHECK (billing_type IN ('BOE', 'DO', 'INVOICE')),
+  user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  file_url TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  file_name TEXT,
+  file_type TEXT,
+  uploaded_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS billing_uploads_awb_idx ON billing_uploads(awb_number);
+CREATE INDEX IF NOT EXISTS billing_uploads_type_idx ON billing_uploads(billing_type);
+CREATE INDEX IF NOT EXISTS billing_uploads_user_idx ON billing_uploads(user_id);
+CREATE INDEX IF NOT EXISTS billing_uploads_created_at_idx ON billing_uploads(created_at);
