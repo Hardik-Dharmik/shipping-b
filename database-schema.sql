@@ -162,3 +162,17 @@ CREATE INDEX IF NOT EXISTS billing_uploads_awb_idx ON billing_uploads(awb_number
 CREATE INDEX IF NOT EXISTS billing_uploads_type_idx ON billing_uploads(billing_type);
 CREATE INDEX IF NOT EXISTS billing_uploads_user_idx ON billing_uploads(user_id);
 CREATE INDEX IF NOT EXISTS billing_uploads_created_at_idx ON billing_uploads(created_at);
+
+-- Notifications (polling)
+CREATE TABLE IF NOT EXISTS notifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT,
+  data JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS notifications_created_at_idx ON notifications(created_at);

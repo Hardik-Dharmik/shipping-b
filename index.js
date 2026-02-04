@@ -8,6 +8,7 @@ const adminRoutes = require("./routes/admin");
 const shippingRoutes = require("./routes/shipping");
 const ticketRoutes = require("./routes/tickets");
 const billingRoutes = require("./routes/billing");
+const notificationRoutes = require("./routes/notifications");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -33,6 +34,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/shipping", shippingRoutes);
 app.use("/api/tickets", ticketRoutes);
 app.use("/api/billing", billingRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 // test route
 app.get("/", (req, res) => {

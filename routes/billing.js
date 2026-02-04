@@ -167,6 +167,20 @@ router.post('/upload', isAdmin, upload.single('file'), async (req, res) => {
 
     if (insertError) throw insertError;
 
+    await supabaseAdmin
+      .from('notifications')
+      .insert({
+        user_id: order.user_id,
+        type: 'billing_upload',
+        title: 'Billing document uploaded',
+        body: `${normalizedType} document uploaded for AWB ${awb_number}.`,
+        data: {
+          awb_number,
+          billing_type: normalizedType,
+          file_url: data.publicUrl
+        }
+      });
+
     return res.status(201).json({
       success: true,
       awb_number,

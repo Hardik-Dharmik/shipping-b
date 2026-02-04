@@ -78,6 +78,41 @@ router.post('/create', authenticateToken, async (req, res) => {
       throw error;
     }
 
+    if (userRole === 'admin') {
+      await supabaseAdmin
+        .from('notifications')
+        .insert({
+          user_id: order.user_id,
+          type: 'ticket_created',
+          title: 'New ticket created',
+          body: `A ticket was created for AWB ${awb_number}.`,
+          data: {
+            ticket_id: data.id,
+            awb_number
+          }
+        });
+    } else {
+      const { data: admins, error: adminError } = await supabaseAdmin
+        .from('users')
+        .select('id')
+        .eq('role', 'admin')
+        .eq('approval_status', 'approved');
+
+      if (!adminError && admins && admins.length > 0) {
+        const rows = admins.map((admin) => ({
+          user_id: admin.id,
+          type: 'ticket_created',
+          title: 'New ticket created',
+          body: `New ticket created for AWB ${awb_number}.`,
+          data: {
+            ticket_id: data.id,
+            awb_number
+          }
+        }));
+        await supabaseAdmin.from('notifications').insert(rows);
+      }
+    }
+
     res.status(201).json({
       success: true,
       message: 'Ticket created successfully',
@@ -223,7 +258,7 @@ router.post(
       // 1️⃣ Fetch ticket & verify access
       let query = supabaseAdmin
         .from('tickets')
-        .select('id, status, messages')
+        .select('id, status, messages, user_id, awb_number')
         .eq('id', ticketId);
 
       if (userRole !== 'admin') {
@@ -297,6 +332,42 @@ router.post(
         .eq('id', ticketId);
 
       if (updateError) throw updateError;
+
+      // Notify the other party only
+      if (userRole === 'admin') {
+        await supabaseAdmin
+          .from('notifications')
+          .insert({
+            user_id: ticket.user_id,
+            type: 'ticket_message',
+            title: 'New ticket reply',
+            body: `New message for ticket ${ticketId}.`,
+            data: {
+              ticket_id: ticketId,
+              awb_number: ticket.awb_number || null
+            }
+          });
+      } else {
+        const { data: admins, error: adminError } = await supabaseAdmin
+          .from('users')
+          .select('id')
+          .eq('role', 'admin')
+          .eq('approval_status', 'approved');
+
+        if (!adminError && admins && admins.length > 0) {
+          const rows = admins.map((admin) => ({
+            user_id: admin.id,
+            type: 'ticket_message',
+            title: 'New ticket message',
+            body: `New message from user for ticket ${ticketId}.`,
+            data: {
+              ticket_id: ticketId,
+              awb_number: ticket.awb_number || null
+            }
+          }));
+          await supabaseAdmin.from('notifications').insert(rows);
+        }
+      }
 
       const unreadColumn =
   userRole === 'user'
