@@ -5,6 +5,10 @@ const router = express.Router();
 const { authenticateToken } = require('./auth');
 const { supabaseAdmin } = require('../supabase');
 
+const generateTicketNumber = () => {
+  return String(Math.floor(100000 + Math.random() * 900000));
+};
+
 const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 } // 5MB
 });
@@ -58,24 +62,44 @@ router.post('/create', authenticateToken, async (req, res) => {
     }
 
     /* 3️⃣ Create ticket WITHOUT messages */
-    const { data, error } = await supabaseAdmin
-      .from('tickets')
-      .insert({
-        awb_number,
-        order_id: order.id, // derived securely
-        user_id: order.user_id,
-        created_by_id: userId,
-        created_by_role: userRole,
-        category,
-        subcategory,
-        status: 'open',
-        messages: []        // ✅ empty conversation
-      })
-      .select()
-      .single();
+    let data = null;
+    let lastError = null;
+    let ticketNumber = null;
 
-    if (error) {
-      throw error;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      ticketNumber = generateTicketNumber();
+      const { data: inserted, error } = await supabaseAdmin
+        .from('tickets')
+        .insert({
+          awb_number,
+          order_id: order.id, // derived securely
+          user_id: order.user_id,
+          created_by_id: userId,
+          created_by_role: userRole,
+          category,
+          subcategory,
+          status: 'open',
+          messages: [],        // ✅ empty conversation
+          ticket_number: ticketNumber
+        })
+        .select()
+        .single();
+
+      if (!error) {
+        data = inserted;
+        lastError = null;
+        break;
+      }
+
+      if (error.code !== '23505') {
+        throw error;
+      }
+
+      lastError = error;
+    }
+
+    if (!data) {
+      throw lastError || new Error('Failed to generate unique ticket number');
     }
 
     if (userRole === 'admin') {
@@ -85,10 +109,11 @@ router.post('/create', authenticateToken, async (req, res) => {
           user_id: order.user_id,
           type: 'ticket_created',
           title: 'New ticket created',
-          body: `A ticket was created for AWB ${awb_number}.`,
+          body: `Ticket ${data.ticket_number} created for AWB ${awb_number}.`,
           data: {
             ticket_id: data.id,
-            awb_number
+            awb_number,
+            ticket_number: data.ticket_number
           }
         });
     } else {
@@ -103,10 +128,11 @@ router.post('/create', authenticateToken, async (req, res) => {
           user_id: admin.id,
           type: 'ticket_created',
           title: 'New ticket created',
-          body: `New ticket created for AWB ${awb_number}.`,
+          body: `Ticket ${data.ticket_number} created for AWB ${awb_number}.`,
           data: {
             ticket_id: data.id,
-            awb_number
+            awb_number,
+            ticket_number: data.ticket_number
           }
         }));
         await supabaseAdmin.from('notifications').insert(rows);
@@ -139,6 +165,7 @@ router.get('/my-tickets', authenticateToken, async (req, res) => {
       .from('tickets')
       .select(`
         id,
+        ticket_number,
         awb_number,
         order_id,
         user_id,

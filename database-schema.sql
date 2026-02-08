@@ -132,6 +132,9 @@ ADD COLUMN unread_admin_count INTEGER DEFAULT 0;
 
 ALTER TABLE tickets DROP CONSTRAINT IF EXISTS tickets_awb_number_key;
 
+ALTER TABLE tickets
+ADD COLUMN IF NOT EXISTS ticket_number TEXT UNIQUE;
+
 ALTER TABLE orders
 ADD COLUMN IF NOT EXISTS invoice_urls JSONB DEFAULT '[]'::jsonb,
 ADD COLUMN IF NOT EXISTS packing_list_urls JSONB DEFAULT '[]'::jsonb;
@@ -176,3 +179,34 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS notifications_created_at_idx ON notifications(created_at);
+
+-- 1) Add column with unique constraint
+ALTER TABLE tickets
+ADD COLUMN IF NOT EXISTS ticket_number TEXT UNIQUE;
+
+-- 2) Backfill existing rows with unique 6-digit numbers
+DO $$
+DECLARE
+  v_id uuid;
+  v_num text;
+BEGIN
+  FOR v_id IN
+    SELECT id FROM tickets WHERE ticket_number IS NULL
+  LOOP
+    LOOP
+      v_num := lpad((floor(random() * 1000000))::int::text, 6, '0');
+      EXIT WHEN NOT EXISTS (
+        SELECT 1 FROM tickets WHERE ticket_number = v_num
+      );
+    END LOOP;
+
+    UPDATE tickets
+    SET ticket_number = v_num
+    WHERE id = v_id;
+  END LOOP;
+END $$;
+
+-- 3) Enforce NOT NULL after backfill
+ALTER TABLE tickets
+ALTER COLUMN ticket_number SET NOT NULL;
+

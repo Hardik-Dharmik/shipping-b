@@ -121,6 +121,52 @@ router.get('/users', isAdmin, async (req, res) => {
   }
 });
 
+// Get all users with their order counts
+router.get('/users-with-order-count', isAdmin, async (req, res) => {
+  try {
+    const { status } = req.query;
+
+    let query = supabaseAdmin
+      .from('users')
+      .select('id, name, email, company_name, role, approval_status, created_at, updated_at, orders(count)');
+
+    query = query.neq('role', 'admin');
+
+    if (status) {
+      query = query.eq('approval_status', status);
+    }
+
+    const { data, error } = await query.order('created_at', { ascending: false });
+
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+
+    const users = (data || []).map((user) => {
+      const ordersCount = Array.isArray(user.orders) && user.orders[0] ? user.orders[0].count : 0;
+      const { orders, ...rest } = user;
+      return {
+        ...rest,
+        orders_count: ordersCount ?? 0
+      };
+    });
+
+    res.json({
+      success: true,
+      count: users.length,
+      users
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Get single user by ID
 router.get('/users/:id', isAdmin, async (req, res) => {
   try {

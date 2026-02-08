@@ -562,6 +562,32 @@ router.use((err, req, res, next) => {
 router.get('/orders', authenticateToken, async (req, res) => {
   const userId = req.user.id;
 
+  console.log(userId);
+
+  const { data, error } = await supabaseAdmin
+    .from('orders')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+
+  res.json({ success: true, data });
+});
+
+// Get orders for a specific user (admin or owner)
+router.get('/orders/user/:userId', authenticateToken, async (req, res) => {
+  const { userId } = req.params;
+
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({
+      success: false,
+      error: 'Access denied'
+    });
+  }
+
   const { data, error } = await supabaseAdmin
     .from('orders')
     .select('*')
