@@ -120,17 +120,8 @@ router.post('/quote', authenticateToken, async (req, res) => {
     }
 
     // Calculate additional charges
-    let additionalCharges = 0;
-
-    // 1. REQUIRE BOE (optional charges 100aed)
-    if (requireBOE === true || requireBOE === 'true') {
-      additionalCharges += 100;
-    }
-
-    // 2. REQUIRE D/O (optional charges 100aed)
-    if (requireDO === true || requireDO === 'true') {
-      additionalCharges += 100;
-    }
+    const boeCharge = (requireBOE === true || requireBOE === 'true') ? 100 : 0;
+    const doCharge = (requireDO === true || requireDO === 'true') ? 100 : 0;
 
     // 3. EXPORT DECLARATION (mandatory for export booking from UAE) - 120aed
     const isUae = (country) => {
@@ -142,9 +133,8 @@ router.post('/quote', authenticateToken, async (req, res) => {
     // Check if it's an export from UAE (Pickup is UAE, Destination is NOT UAE)
     const isExportFromUae = isUae(pickupCountry) && !isUae(destinationCountry);
 
-    if (isExportFromUae) {
-      additionalCharges += 120;
-    }
+    const exportDeclarationCharge = isExportFromUae ? 120 : 0;
+    const additionalCharges = boeCharge + doCharge + exportDeclarationCharge;
 
     // Calculate shipping costs based on weight (cost = weight * rate)
     // DHL: 10 dirham per kg
@@ -154,9 +144,13 @@ router.post('/quote', authenticateToken, async (req, res) => {
     const fedexRate = 8;
     const upsRate = 6;
     
-    const dhlCost = (weight * dhlRate) + additionalCharges;
-    const fedexCost = (weight * fedexRate) + additionalCharges;
-    const upsCost = (weight * upsRate) + additionalCharges;
+    const dhlBaseCost = weight * dhlRate;
+    const fedexBaseCost = weight * fedexRate;
+    const upsBaseCost = weight * upsRate;
+
+    const dhlCost = dhlBaseCost + additionalCharges;
+    const fedexCost = fedexBaseCost + additionalCharges;
+    const upsCost = upsBaseCost + additionalCharges;
 
     // Generate random estimated delivery times (in days)
     // Random between 3-7 days for international shipping
@@ -243,6 +237,19 @@ router.post('/quote', authenticateToken, async (req, res) => {
         {
           carrier: 'DHL',
           cost: dhlCost,
+          costBreakdown: {
+            weight: weight,
+            ratePerKg: dhlRate,
+            baseShippingCost: dhlBaseCost,
+            complianceCharges: {
+              boeCharge,
+              doCharge,
+              exportDeclarationCharge
+            },
+            additionalCharges,
+            totalCost: dhlCost,
+            currency: 'AED'
+          },
           currency: 'AED',
           estimatedDeliveryDays: dhlDeliveryDays,
           estimatedDelivery: `${dhlDeliveryDays} business days`,
@@ -254,6 +261,19 @@ router.post('/quote', authenticateToken, async (req, res) => {
         {
           carrier: 'FedEx',
           cost: fedexCost,
+          costBreakdown: {
+            weight: weight,
+            ratePerKg: fedexRate,
+            baseShippingCost: fedexBaseCost,
+            complianceCharges: {
+              boeCharge,
+              doCharge,
+              exportDeclarationCharge
+            },
+            additionalCharges,
+            totalCost: fedexCost,
+            currency: 'AED'
+          },
           currency: 'AED',
           estimatedDeliveryDays: fedexDeliveryDays,
           estimatedDelivery: `${fedexDeliveryDays} business days`,
@@ -265,6 +285,19 @@ router.post('/quote', authenticateToken, async (req, res) => {
         {
           carrier: 'UPS',
           cost: upsCost,
+          costBreakdown: {
+            weight: weight,
+            ratePerKg: upsRate,
+            baseShippingCost: upsBaseCost,
+            complianceCharges: {
+              boeCharge,
+              doCharge,
+              exportDeclarationCharge
+            },
+            additionalCharges,
+            totalCost: upsCost,
+            currency: 'AED'
+          },
           currency: 'AED',
           estimatedDeliveryDays: upsDeliveryDays,
           estimatedDelivery: `${upsDeliveryDays} business days`,
@@ -445,9 +478,69 @@ router.post(
       totalComplianceCharges += complianceData.exportDeclarationCharge;
     }
 
-    // Update carrier cost with compliance charges
+    // Build and persist a normalized carrier cost breakdown on order data.
     if (parsedCarrier && (parsedCarrier.cost !== undefined && parsedCarrier.cost !== null)) {
-      parsedCarrier.cost = parseFloat(parsedCarrier.cost) + totalComplianceCharges;
+      const carrierName = String(parsedCarrier.carrier || '').toLowerCase().trim();
+      const quoteRateByCarrier = {
+        dhl: 10,
+        fedex: 8,
+        ups: 6
+      };
+
+      const toNumber = (value, fallback = 0) => {
+        const n = Number(value);
+        return Number.isFinite(n) ? n : fallback;
+      };
+
+      const incomingCost = toNumber(parsedCarrier.cost, 0);
+      const existingBreakdown = (parsedCarrier.costBreakdown && typeof parsedCarrier.costBreakdown === 'object')
+        ? parsedCarrier.costBreakdown
+        : null;
+      const existingAdditionalCharges = toNumber(existingBreakdown?.additionalCharges, 0);
+      const complianceAlreadyIncluded = existingBreakdown && existingAdditionalCharges === totalComplianceCharges;
+
+      let baseShippingCost = existingBreakdown
+        ? toNumber(existingBreakdown.baseShippingCost, incomingCost - existingAdditionalCharges)
+        : incomingCost;
+
+      if (baseShippingCost < 0) baseShippingCost = 0;
+
+      const finalCarrierCost = complianceAlreadyIncluded
+        ? incomingCost
+        : (baseShippingCost + totalComplianceCharges);
+
+      let ratePerKg = toNumber(
+        existingBreakdown?.ratePerKg,
+        toNumber(parsedCarrier.ratePerKg, 0)
+      );
+
+      if (!ratePerKg && quoteRateByCarrier[carrierName]) {
+        ratePerKg = quoteRateByCarrier[carrierName];
+      } else if (!ratePerKg && declaredWeight > 0) {
+        ratePerKg = baseShippingCost / declaredWeight;
+      }
+
+      const boeCharge = complianceData.requireBOE ? 100 : 0;
+      const doCharge = complianceData.requireDO ? 100 : 0;
+      const exportDeclarationCharge = complianceData.exportDeclaration
+        ? complianceData.exportDeclarationCharge
+        : 0;
+
+      parsedCarrier.cost = Number(finalCarrierCost.toFixed(2));
+      parsedCarrier.currency = parsedCarrier.currency || 'AED';
+      parsedCarrier.costBreakdown = {
+        weight: declaredWeight,
+        ratePerKg: Number(ratePerKg.toFixed(2)),
+        baseShippingCost: Number(baseShippingCost.toFixed(2)),
+        complianceCharges: {
+          boeCharge,
+          doCharge,
+          exportDeclarationCharge: Number(exportDeclarationCharge.toFixed(2))
+        },
+        additionalCharges: Number(totalComplianceCharges.toFixed(2)),
+        totalCost: Number(finalCarrierCost.toFixed(2)),
+        currency: parsedCarrier.currency
+      };
     }
 
     const orderPayload = {
