@@ -210,3 +210,25 @@ END $$;
 ALTER TABLE tickets
 ALTER COLUMN ticket_number SET NOT NULL;
 
+-- Create table for shareable pickup/destination form links
+CREATE TABLE IF NOT EXISTS order_address_forms (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code CHAR(6) NOT NULL UNIQUE CHECK (code ~ '^[0-9]{6}$'),
+  pickup_address JSONB,
+  destination_address JSONB,
+  is_submitted BOOLEAN NOT NULL DEFAULT FALSE,
+  expires_at TIMESTAMP WITH TIME ZONE DEFAULT (TIMEZONE('utc', NOW()) + INTERVAL '30 days'),
+  submitted_at TIMESTAMP WITH TIME ZONE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_order_address_forms_user_id
+  ON order_address_forms(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_order_address_forms_code
+  ON order_address_forms(code);
+
+CREATE INDEX IF NOT EXISTS idx_order_address_forms_submitted
+  ON order_address_forms(is_submitted, submitted_at DESC);
+
