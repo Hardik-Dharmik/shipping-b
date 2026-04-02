@@ -217,11 +217,22 @@ CREATE TABLE IF NOT EXISTS order_address_forms (
   code CHAR(6) NOT NULL UNIQUE CHECK (code ~ '^[0-9]{6}$'),
   pickup_address JSONB,
   destination_address JSONB,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'ordered')),
   is_submitted BOOLEAN NOT NULL DEFAULT FALSE,
   expires_at TIMESTAMP WITH TIME ZONE DEFAULT (TIMEZONE('utc', NOW()) + INTERVAL '30 days'),
   submitted_at TIMESTAMP WITH TIME ZONE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()) NOT NULL
 );
+
+ALTER TABLE order_address_forms
+ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'open';
+
+ALTER TABLE order_address_forms
+DROP CONSTRAINT IF EXISTS order_address_forms_status_check;
+
+ALTER TABLE order_address_forms
+ADD CONSTRAINT order_address_forms_status_check
+CHECK (status IN ('open', 'ordered'));
 
 CREATE INDEX IF NOT EXISTS idx_order_address_forms_user_id
   ON order_address_forms(user_id);

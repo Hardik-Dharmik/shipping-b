@@ -368,6 +368,7 @@ router.post(
     const destinationPincode = orderSource.destinationPincode;
     const actualWeight = orderSource.actualWeight;
     const shipmentValue = orderSource.shipmentValue;
+    const addressFormId = orderSource.addressFormId;
 
     const boxes = parseJsonField(orderSource.boxes, []);
     const parsedCarrier = parseJsonField(orderSource.carrier, null);
@@ -407,6 +408,32 @@ router.post(
         success: false,
         error: 'actualWeight must be a positive number'
       });
+    }
+
+    let addressForm = null;
+    if (addressFormId) {
+      const { data: existingAddressForm, error: addressFormError } = await supabaseAdmin
+        .from('order_address_forms')
+        .select('id, user_id, status')
+        .eq('id', addressFormId)
+        .eq('user_id', userId)
+        .single();
+
+      if (addressFormError || !existingAddressForm) {
+        return res.status(404).json({
+          success: false,
+          error: 'Address form not found'
+        });
+      }
+
+      if (existingAddressForm.status === 'ordered') {
+        return res.status(400).json({
+          success: false,
+          error: 'Address form has already been used for an order'
+        });
+      }
+
+      addressForm = existingAddressForm;
     }
 
     const DIVISOR = 5000;
@@ -622,6 +649,18 @@ router.post(
 
     if (error) throw error;
 
+    if (addressForm) {
+      const { error: addressFormUpdateError } = await supabaseAdmin
+        .from('order_address_forms')
+        .update({
+          status: 'ordered'
+        })
+        .eq('id', addressForm.id)
+        .eq('user_id', userId);
+
+      if (addressFormUpdateError) throw addressFormUpdateError;
+    }
+
     return res.status(201).json({
       success: true,
       message: 'Order created successfully',
@@ -771,7 +810,7 @@ router.get('/address-forms/public/:code', async (req, res) => {
 
     const { data, error } = await supabaseAdmin
       .from('order_address_forms')
-      .select('id, code, is_submitted, expires_at, created_at')
+      .select('id, code, status, is_submitted, expires_at, created_at')
       .eq('code', code)
       .single();
 
@@ -786,6 +825,13 @@ router.get('/address-forms/public/:code', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'Form already submitted'
+      });
+    }
+
+    if (data.status === 'ordered') {
+      return res.status(400).json({
+        success: false,
+        error: 'Form has already been used for an order'
       });
     }
 
@@ -846,6 +892,13 @@ router.post('/address-forms/public/:code', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'Form already submitted'
+      });
+    }
+
+    if (form.status === 'ordered') {
+      return res.status(400).json({
+        success: false,
+        error: 'Form has already been used for an order'
       });
     }
 
