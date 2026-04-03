@@ -217,6 +217,7 @@ CREATE TABLE IF NOT EXISTS order_address_forms (
   code CHAR(6) NOT NULL UNIQUE CHECK (code ~ '^[0-9]{6}$'),
   pickup_address JSONB,
   destination_address JSONB,
+  products JSONB NOT NULL DEFAULT '[]'::jsonb,
   status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'ordered')),
   is_submitted BOOLEAN NOT NULL DEFAULT FALSE,
   expires_at TIMESTAMP WITH TIME ZONE DEFAULT (TIMEZONE('utc', NOW()) + INTERVAL '30 days'),
@@ -225,6 +226,7 @@ CREATE TABLE IF NOT EXISTS order_address_forms (
 );
 
 ALTER TABLE order_address_forms
+ADD COLUMN IF NOT EXISTS products JSONB NOT NULL DEFAULT '[]'::jsonb,
 ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'open';
 
 ALTER TABLE order_address_forms

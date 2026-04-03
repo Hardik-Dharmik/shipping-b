@@ -859,7 +859,19 @@ router.get('/address-forms/public/:code', async (req, res) => {
 router.post('/address-forms/public/:code', async (req, res) => {
   try {
     const code = String(req.params.code || '').trim();
-    const { pickupAddress, destinationAddress } = req.body || {};
+    const parseJsonField = (value, fallback) => {
+      if (value === undefined || value === null || value === '') return fallback;
+      if (typeof value !== 'string') return value;
+      try {
+        return JSON.parse(value);
+      } catch (err) {
+        throw new Error('Invalid JSON in request body');
+      }
+    };
+
+    const pickupAddress = parseJsonField(req.body?.pickupAddress, null);
+    const destinationAddress = parseJsonField(req.body?.destinationAddress, null);
+    const products = parseJsonField(req.body?.products, []);
 
     if (!/^\d{6}$/.test(code)) {
       return res.status(400).json({
@@ -872,6 +884,13 @@ router.post('/address-forms/public/:code', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'pickupAddress and destinationAddress are required'
+      });
+    }
+
+    if (!Array.isArray(products)) {
+      return res.status(400).json({
+        success: false,
+        error: 'products must be an array'
       });
     }
 
@@ -914,6 +933,7 @@ router.post('/address-forms/public/:code', async (req, res) => {
       .update({
         pickup_address: pickupAddress,
         destination_address: destinationAddress,
+        products,
         is_submitted: true,
         submitted_at: new Date().toISOString()
       })
