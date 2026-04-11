@@ -6,6 +6,7 @@ const { authenticateToken } = require('./auth');
 const { supabaseAdmin } = require('../supabase');
 const generateOrderPdf = require('../utils/generateOrderPdf');
 const uploadAwbToSupabase = require('../utils/uploadAWBtoSupabase');
+const { getTwentyOneKgOfferMessage } = require('../utils/chargeableWeightOffers');
 
 const generateAWB = () => {
   return `AWB-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -264,6 +265,13 @@ function calculateDeliveryDateTime(days) {
 
 // Build final response
 function buildResponse(input, quotes) {
+  const offerMessage = getTwentyOneKgOfferMessage({
+    pickupCountry: input.pickupCountry,
+    destinationCountry: input.destinationCountry,
+    actualWeight: input.weight,
+    dimensions: input.dimensions
+  });
+
   return {
     pickup: {
       country: input.pickupCountry,
@@ -284,6 +292,7 @@ function buildResponse(input, quotes) {
       ? { value: input.shipmentValue, currency: 'AED' }
       : null,
     compliance: input.compliance,
+    offers: offerMessage ? [offerMessage] : [],
     quotes,
     calculatedAt: new Date().toISOString()
   };
