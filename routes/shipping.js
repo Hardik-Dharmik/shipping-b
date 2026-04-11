@@ -81,7 +81,8 @@ router.post('/quote', authenticateToken, async (req, res) => {
       height,
       shipmentValue,
       requireBOE,
-      requireDO
+      requireDO,
+      temporaryExportForRepairAndReturn
     } = req.body;
 
     // Validate required fields
@@ -131,6 +132,8 @@ router.post('/quote', authenticateToken, async (req, res) => {
     // Calculate additional charges
     const boeCharge = (requireBOE === true || requireBOE === 'true') ? 100 : 0;
     const doCharge = (requireDO === true || requireDO === 'true') ? 100 : 0;
+    const temporaryExportForRepairAndReturnCharge =
+      (temporaryExportForRepairAndReturn === true || temporaryExportForRepairAndReturn === 'true') ? 380 : 0;
 
     // 3. EXPORT DECLARATION (mandatory for export booking from UAE) - 120aed
     const isUae = (country) => {
@@ -143,7 +146,8 @@ router.post('/quote', authenticateToken, async (req, res) => {
     const isExportFromUae = isUae(pickupCountry) && !isUae(destinationCountry);
 
     const exportDeclarationCharge = isExportFromUae ? 120 : 0;
-    const additionalCharges = boeCharge + doCharge + exportDeclarationCharge;
+    const additionalCharges =
+      boeCharge + doCharge + exportDeclarationCharge + temporaryExportForRepairAndReturnCharge;
 
     // Calculate shipping costs based on weight (cost = weight * rate)
     // DHL: 10 dirham per kg
@@ -242,6 +246,12 @@ router.post('/quote', authenticateToken, async (req, res) => {
         value: shipmentValueNum,
         currency: 'AED'
       } : null,
+      compliance: {
+        requireBOE: requireBOE === true || requireBOE === 'true',
+        requireDO: requireDO === true || requireDO === 'true',
+        temporaryExportForRepairAndReturn:
+          temporaryExportForRepairAndReturn === true || temporaryExportForRepairAndReturn === 'true'
+      },
       quotes: [
         {
           carrier: 'DHL',
@@ -253,7 +263,8 @@ router.post('/quote', authenticateToken, async (req, res) => {
             complianceCharges: {
               boeCharge,
               doCharge,
-              exportDeclarationCharge
+              exportDeclarationCharge,
+              temporaryExportForRepairAndReturnCharge
             },
             additionalCharges,
             totalCost: dhlCost,
@@ -277,7 +288,8 @@ router.post('/quote', authenticateToken, async (req, res) => {
             complianceCharges: {
               boeCharge,
               doCharge,
-              exportDeclarationCharge
+              exportDeclarationCharge,
+              temporaryExportForRepairAndReturnCharge
             },
             additionalCharges,
             totalCost: fedexCost,
@@ -301,7 +313,8 @@ router.post('/quote', authenticateToken, async (req, res) => {
             complianceCharges: {
               boeCharge,
               doCharge,
-              exportDeclarationCharge
+              exportDeclarationCharge,
+              temporaryExportForRepairAndReturnCharge
             },
             additionalCharges,
             totalCost: upsCost,
@@ -466,7 +479,8 @@ router.post(
       requireDO: false,
       exportDeclaration: false,
       exportDeclarationCharge: 0,
-      dutyExemption: false
+      dutyExemption: false,
+      temporaryExportForRepairAndReturn: false
     };
 
     let totalComplianceCharges = 0;
@@ -487,6 +501,14 @@ router.post(
       // 4. DUTY EXEMPTION
       if (parsedCompliance.dutyExemption === true || parsedCompliance.dutyExemption === 'true') {
         complianceData.dutyExemption = true;
+      }
+
+      if (
+        parsedCompliance.temporaryExportForRepairAndReturn === true ||
+        parsedCompliance.temporaryExportForRepairAndReturn === 'true'
+      ) {
+        complianceData.temporaryExportForRepairAndReturn = true;
+        totalComplianceCharges += 380;
       }
     }
 
@@ -561,6 +583,8 @@ router.post(
       const exportDeclarationCharge = complianceData.exportDeclaration
         ? complianceData.exportDeclarationCharge
         : 0;
+      const temporaryExportForRepairAndReturnCharge =
+        complianceData.temporaryExportForRepairAndReturn ? 380 : 0;
 
       parsedCarrier.cost = Number(finalCarrierCost.toFixed(2));
       parsedCarrier.currency = parsedCarrier.currency || 'AED';
@@ -571,7 +595,8 @@ router.post(
         complianceCharges: {
           boeCharge,
           doCharge,
-          exportDeclarationCharge: Number(exportDeclarationCharge.toFixed(2))
+          exportDeclarationCharge: Number(exportDeclarationCharge.toFixed(2)),
+          temporaryExportForRepairAndReturnCharge: Number(temporaryExportForRepairAndReturnCharge.toFixed(2))
         },
         additionalCharges: Number(totalComplianceCharges.toFixed(2)),
         totalCost: Number(finalCarrierCost.toFixed(2)),
