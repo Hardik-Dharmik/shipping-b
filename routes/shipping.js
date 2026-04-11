@@ -536,8 +536,8 @@ router.post(
       totalComplianceCharges += complianceData.exportDeclarationCharge;
     }
 
-    // Build and persist a normalized carrier cost breakdown on order data.
-    if (parsedCarrier && (parsedCarrier.cost !== undefined && parsedCarrier.cost !== null)) {
+    // Recalculate carrier pricing from rates plus compliance charges, matching /quote.
+    if (parsedCarrier) {
       const carrierName = String(parsedCarrier.carrier || '').toLowerCase().trim();
       const quoteRateByCarrier = {
         dhl: 10,
@@ -550,22 +550,9 @@ router.post(
         return Number.isFinite(n) ? n : fallback;
       };
 
-      const incomingCost = toNumber(parsedCarrier.cost, 0);
       const existingBreakdown = (parsedCarrier.costBreakdown && typeof parsedCarrier.costBreakdown === 'object')
         ? parsedCarrier.costBreakdown
         : null;
-      const existingAdditionalCharges = toNumber(existingBreakdown?.additionalCharges, 0);
-      const complianceAlreadyIncluded = existingBreakdown && existingAdditionalCharges === totalComplianceCharges;
-
-      let baseShippingCost = existingBreakdown
-        ? toNumber(existingBreakdown.baseShippingCost, incomingCost - existingAdditionalCharges)
-        : incomingCost;
-
-      if (baseShippingCost < 0) baseShippingCost = 0;
-
-      const finalCarrierCost = complianceAlreadyIncluded
-        ? incomingCost
-        : (baseShippingCost + totalComplianceCharges);
 
       let ratePerKg = toNumber(
         existingBreakdown?.ratePerKg,
@@ -574,9 +561,21 @@ router.post(
 
       if (!ratePerKg && quoteRateByCarrier[carrierName]) {
         ratePerKg = quoteRateByCarrier[carrierName];
-      } else if (!ratePerKg && declaredWeight > 0) {
-        ratePerKg = baseShippingCost / declaredWeight;
       }
+
+      if (!ratePerKg && declaredWeight > 0) {
+        const incomingCost = toNumber(parsedCarrier.cost, 0);
+        const existingAdditionalCharges = toNumber(existingBreakdown?.additionalCharges, 0);
+        const inferredBaseShippingCost = Math.max(
+          0,
+          incomingCost - Math.max(existingAdditionalCharges, totalComplianceCharges)
+        );
+
+        ratePerKg = inferredBaseShippingCost / declaredWeight;
+      }
+
+      const baseShippingCost = declaredWeight * ratePerKg;
+      const finalCarrierCost = baseShippingCost + totalComplianceCharges;
 
       const boeCharge = complianceData.requireBOE ? 100 : 0;
       const doCharge = complianceData.requireDO ? 100 : 0;
