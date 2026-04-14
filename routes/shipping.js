@@ -299,6 +299,15 @@ function buildResponse(input, quotes) {
 }
 
 const parseOrderData = (req) => {
+  const parseJsonField = (value, fallback) => {
+    if (value === undefined || value === null || value === '') return fallback;
+    if (typeof value !== 'string') return value;
+    try {
+      return JSON.parse(value);
+    } catch (err) {
+      throw new Error('Invalid JSON in multipart field');
+    }
+  };
       const orderFromBody = parseJsonField(req.body.order, null);
       const orderSource = orderFromBody || req.body;
 
@@ -323,9 +332,12 @@ const getProcessedBoxes = (boxes) => {
       if (!quantity || !actualWeight || !length || !breadth || !height) {
         throw new Error(`Invalid box at index ${index}`);
       }
+      const DIVISOR = 5000;
 
       const volumetric = (length * breadth * height) / DIVISOR;
       const chargeable = Math.max(actualWeight, volumetric);
+
+      let totalChargeableWeight = 0;
 
       totalChargeableWeight += chargeable * quantity;
 
@@ -394,17 +406,6 @@ router.post(
   async (req, res) => {
   try {
     const userId = req.user.id; 
-
-    const parseJsonField = (value, fallback) => {
-      if (value === undefined || value === null || value === '') return fallback;
-      if (typeof value !== 'string') return value;
-      try {
-        return JSON.parse(value);
-      } catch (err) {
-        throw new Error('Invalid JSON in multipart field');
-      }
-    };
-
 
     const {
       pickupCountry,
@@ -481,10 +482,33 @@ router.post(
       addressForm = existingAddressForm;
     }
 
-    const DIVISOR = 5000;
     let totalChargeableWeight = 0;
 
-    const processedBoxes = getProcessedBoxes(boxes);
+    // const {processedBoxes, totalWeight} = getProcessedBoxes(boxes);
+    // totalChargeableWeight = totalWeight;
+
+    const processedBoxes = boxes.map((box, index) => {
+      const { quantity, actualWeight, length, breadth, height } = box;
+
+      if (!quantity || !actualWeight || !length || !breadth || !height) {
+        throw new Error(`Invalid box at index ${index}`);
+      }
+      const DIVISOR = 5000;
+
+      const volumetric = (length * breadth * height) / DIVISOR;
+      const chargeable = Math.max(actualWeight, volumetric);
+
+
+      totalChargeableWeight += chargeable * quantity;
+
+      return {
+        quantity,
+        actualWeight,
+        dimensions: { length, breadth, height, unit: 'cm' },
+        volumetricWeight: Number(volumetric.toFixed(2)),
+        chargeableWeight: Number(chargeable.toFixed(2))
+      };
+    })
 
     let {complianceData, totalComplianceCharges} = getComplianceData(parsedCompliance);
 
