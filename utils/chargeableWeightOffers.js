@@ -8,6 +8,7 @@ const EXCLUDED_PICKUP_COUNTRIES = new Set([
 const OFFER_MIN_ACTUAL_WEIGHT = 11;
 const OFFER_MIN_CHARGEABLE_WEIGHT = 21;
 const VOLUMETRIC_DIVISOR = 5000;
+const FEDEX_DISCOUNTED_RATE_PER_KG = 6;
 
 function normalizeCountry(country) {
   return String(country || '').trim().toLowerCase();
@@ -75,6 +76,7 @@ function getTwentyOneKgOfferMessage({ pickupCountry, destinationCountry, actualW
       minimumActualWeight: OFFER_MIN_ACTUAL_WEIGHT,
       minimumChargeableWeight: OFFER_MIN_CHARGEABLE_WEIGHT
     },
+    discountedRatePerKg: FEDEX_DISCOUNTED_RATE_PER_KG,
     current: {
       actualWeight: Number.isFinite(normalizedActualWeight)
         ? Number(normalizedActualWeight.toFixed(2))
@@ -86,8 +88,55 @@ function getTwentyOneKgOfferMessage({ pickupCountry, destinationCountry, actualW
   };
 }
 
+function isFedExTwentyOneKgOfferApplicable({
+  pickupCountry,
+  destinationCountry,
+  actualWeight,
+  chargeableWeight
+}) {
+  const normalizedActualWeight = Number(actualWeight);
+  const normalizedChargeableWeight = Number(chargeableWeight);
+
+  if (!isTwentyOneKgOfferEligibleRoute(pickupCountry, destinationCountry)) {
+    return false;
+  }
+
+  if (!Number.isFinite(normalizedActualWeight) || !Number.isFinite(normalizedChargeableWeight)) {
+    return false;
+  }
+
+  return (
+    normalizedActualWeight >= OFFER_MIN_ACTUAL_WEIGHT &&
+    normalizedChargeableWeight >= OFFER_MIN_CHARGEABLE_WEIGHT
+  );
+}
+
+function getFedExRatePerKg({
+  pickupCountry,
+  destinationCountry,
+  actualWeight,
+  chargeableWeight,
+  standardRatePerKg
+}) {
+  if (
+    isFedExTwentyOneKgOfferApplicable({
+      pickupCountry,
+      destinationCountry,
+      actualWeight,
+      chargeableWeight
+    })
+  ) {
+    return FEDEX_DISCOUNTED_RATE_PER_KG;
+  }
+
+  return standardRatePerKg;
+}
+
 module.exports = {
+  FEDEX_DISCOUNTED_RATE_PER_KG,
   getChargeableWeight,
+  getFedExRatePerKg,
   getTwentyOneKgOfferMessage,
+  isFedExTwentyOneKgOfferApplicable,
   isTwentyOneKgOfferEligibleRoute
 };

@@ -6,7 +6,11 @@ const { authenticateToken } = require('./auth');
 const { supabaseAdmin } = require('../supabase');
 const generateOrderPdf = require('../utils/generateOrderPdf');
 const uploadAwbToSupabase = require('../utils/uploadAWBtoSupabase');
-const { getTwentyOneKgOfferMessage } = require('../utils/chargeableWeightOffers');
+const {
+  getChargeableWeight,
+  getFedExRatePerKg,
+  getTwentyOneKgOfferMessage
+} = require('../utils/chargeableWeightOffers');
 
 const generateAWB = () => {
   return `AWB-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -83,7 +87,7 @@ router.post('/quote', authenticateToken, async (req, res) => {
     const charges = calculateCharges(input);
 
     // 3. Generate carrier quotes
-    const quotes = generateQuotes(input.weight, charges.additionalCharges);
+    const quotes = generateQuotes(input, charges.additionalCharges);
 
     // 4. Build response
     const response = buildResponse(input, quotes);
@@ -199,15 +203,27 @@ function isExportFromUAE(pickup, destination) {
 }
 
 // Generate quotes
-function generateQuotes(weight, additionalCharges) {
+function generateQuotes(input, additionalCharges) {
   const carriers = [
     { name: 'DHL', rate: 10 },
     { name: 'FedEx', rate: 8 },
     { name: 'UPS', rate: 6 }
   ];
 
+  const chargeableWeight = getChargeableWeight(input.weight, input.dimensions);
+
   return carriers.map(carrier => {
-    const baseCost = weight * carrier.rate;
+    const ratePerKg = carrier.name === 'FedEx'
+      ? getFedExRatePerKg({
+          pickupCountry: input.pickupCountry,
+          destinationCountry: input.destinationCountry,
+          actualWeight: input.weight,
+          chargeableWeight,
+          standardRatePerKg: carrier.rate
+        })
+      : carrier.rate;
+
+    const baseCost = input.weight * ratePerKg;
     const totalCost = baseCost + additionalCharges;
 
     const days = randomBetween(3, 7);
@@ -221,8 +237,11 @@ function generateQuotes(weight, additionalCharges) {
       estimatedDelivery: `${days} business days`,
       ...delivery,
       costBreakdown: {
-        weight,
-        ratePerKg: carrier.rate,
+        weight: input.weight,
+        chargeableWeight: Number.isFinite(chargeableWeight)
+          ? Number(chargeableWeight.toFixed(2))
+          : null,
+        ratePerKg,
         baseShippingCost: baseCost,
         additionalCharges,
         totalCost,
@@ -555,6 +574,16 @@ router.post(
 
       if (!ratePerKg && quoteRateByCarrier[carrierName]) {
         ratePerKg = quoteRateByCarrier[carrierName];
+      }
+
+      if (carrierName === 'fedex') {
+        ratePerKg = getFedExRatePerKg({
+          pickupCountry,
+          destinationCountry,
+          actualWeight: declaredWeight,
+          chargeableWeight: totalChargeableWeight,
+          standardRatePerKg: ratePerKg
+        });
       }
 
       if (!ratePerKg && declaredWeight > 0) {
