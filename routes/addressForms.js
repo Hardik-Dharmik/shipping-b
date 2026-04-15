@@ -262,23 +262,119 @@ router.get('/address-forms', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const { data, error } = await supabaseAdmin
-      .from('order_address_forms')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('is_submitted', true)
-      .order('submitted_at', { ascending: false });
+    const search = String(req.query.search || '').trim();
+    const status = String(req.query.status || '').trim();
+    const fromDate = String(req.query.fromDate || '').trim();
+    const toDate = String(req.query.toDate || '').trim();
+    const sortBy = String(req.query.sortBy || 'created_at').trim();
+    const sortOrder = String(req.query.sortOrder || 'desc').trim().toLowerCase();
+    const parsePositiveInteger = (value, fallback) => {
+      if (value === undefined) return fallback;
+      if (typeof value === 'string' && !/^\d+$/.test(value.trim())) return NaN;
 
-    if (error) {
-      return res.status(500).json({
+      const parsed = Number.parseInt(value, 10);
+      return Number.isInteger(parsed) ? parsed : NaN;
+    };
+
+    const page = parsePositiveInteger(req.query.page, 1);
+    const limit = parsePositiveInteger(req.query.limit, 10);
+
+    if (!Number.isInteger(page) || !Number.isInteger(limit) || page < 1 || limit < 1) {
+      return res.status(400).json({
         success: false,
-        error: error.message
+        error: 'page and limit must be positive integers'
       });
     }
 
-    return res.json({
+    const isValidDate = (value) => !value || !Number.isNaN(Date.parse(value));
+
+    if (!isValidDate(fromDate) || !isValidDate(toDate)) {
+      return res.status(400).json({
+        success: false,
+        error: 'fromDate and toDate must be valid dates'
+      });
+    }
+
+    const allowedSortFields = new Set(['created_at', 'status']);
+    const allowedSortOrders = new Set(['asc', 'desc']);
+
+    if (!allowedSortFields.has(sortBy)) {
+      return res.status(400).json({
+        success: false,
+        error: 'sortBy must be one of: created_at, status'
+      });
+    }
+
+    if (!allowedSortOrders.has(sortOrder)) {
+      return res.status(400).json({
+        success: false,
+        error: 'sortOrder must be either asc or desc'
+      });
+    }
+
+    const safeLimit = Math.min(limit, 100);
+    const from = (page - 1) * safeLimit;
+    const to = from + safeLimit - 1;
+
+    let query = supabaseAdmin
+      .from('order_address_forms')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('is_submitted', true);
+
+    if (search) {
+      const escapedSearch = search.replace(/[%_,]/g, '\\$&');
+      query = query.or(
+        `code.ilike.%${escapedSearch}%`
+      );
+    }
+
+    if (status) {
+      query = query.ilike('status', status);
+    }
+
+    if (fromDate) {
+      query = query.gte('created_at', new Date(fromDate).toISOString());
+    }
+
+    if (toDate) {
+      const endOfDay = new Date(toDate);
+      endOfDay.setHours(23, 59, 59, 999);
+      query = query.lte('created_at', endOfDay.toISOString());
+    }
+
+    const { data, count, error } = await query
+    .order(sortBy, { ascending: sortOrder === 'asc' })
+    .range(from, to);
+
+    if (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+
+    const total = Number.isFinite(count) ? count : 0;
+    const totalPages = total === 0 ? 0 : Math.ceil(total / safeLimit);
+
+    res.json({
       success: true,
-      data
+      data,
+      pagination: {
+        page,
+        limit: safeLimit,
+        search,
+        filters: {
+          status,
+          fromDate,
+          toDate
+        },
+        sorting: {
+          sortBy,
+          sortOrder
+        },
+        total,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPreviousPage: page > 1
+      }
     });
   } catch (error) {
     console.error('Get user address forms error:', error);
