@@ -90,16 +90,104 @@ router.get('/pending', isAdmin, async (req, res) => {
 // Get all users with optional status filter
 router.get('/users', isAdmin, async (req, res) => {
   try {
-    const { status } = req.query;
-    
-    let query = supabaseAdmin.from('users')
-      .select('id, name, email, company_name, role, file_url, file_name, approval_status, created_at, updated_at');
-    
+    const search = String(req.query.search || '').trim();
+    const status = String(req.query.status || '').trim();
+    const role = String(req.query.role || '').trim();
+    const fromDate = String(req.query.fromDate || '').trim();
+    const toDate = String(req.query.toDate || '').trim();
+    const sortBy = String(req.query.sortBy || 'created_at').trim();
+    const sortOrder = String(req.query.sortOrder || 'desc').trim().toLowerCase();
+
+    const parsePositiveInteger = (value, fallback) => {
+      if (value === undefined) return fallback;
+      if (typeof value === 'string' && !/^\d+$/.test(value.trim())) return NaN;
+
+      const parsed = Number.parseInt(value, 10);
+      return Number.isInteger(parsed) ? parsed : NaN;
+    };
+
+    const page = parsePositiveInteger(req.query.page, 1);
+    const limit = parsePositiveInteger(req.query.limit, 10);
+
+    if (!Number.isInteger(page) || !Number.isInteger(limit) || page < 1 || limit < 1) {
+      return res.status(400).json({
+        success: false,
+        error: 'page and limit must be positive integers'
+      });
+    }
+
+    const isValidDate = (value) => !value || !Number.isNaN(Date.parse(value));
+
+    if (!isValidDate(fromDate) || !isValidDate(toDate)) {
+      return res.status(400).json({
+        success: false,
+        error: 'fromDate and toDate must be valid dates'
+      });
+    }
+
+    const allowedSortFields = new Set([
+      'created_at',
+      'updated_at',
+      'name',
+      'email',
+      'company_name',
+      'approval_status',
+      'role'
+    ]);
+    const allowedSortOrders = new Set(['asc', 'desc']);
+
+    if (!allowedSortFields.has(sortBy)) {
+      return res.status(400).json({
+        success: false,
+        error: 'sortBy must be one of: created_at, updated_at, name, email, company_name, approval_status, role'
+      });
+    }
+
+    if (!allowedSortOrders.has(sortOrder)) {
+      return res.status(400).json({
+        success: false,
+        error: 'sortOrder must be either asc or desc'
+      });
+    }
+
+    const safeLimit = Math.min(limit, 100);
+    const from = (page - 1) * safeLimit;
+    const to = from + safeLimit - 1;
+
+    let query = supabaseAdmin
+      .from('users')
+      .select('id, name, email, company_name, role, file_url, file_name, approval_status, created_at, updated_at', {
+        count: 'exact'
+      });
+
+    if (search) {
+      const escapedSearch = search.replace(/[%_,]/g, '\\$&');
+      query = query.or(
+        `name.ilike.%${escapedSearch}%,email.ilike.%${escapedSearch}%,company_name.ilike.%${escapedSearch}%`
+      );
+    }
+
     if (status) {
       query = query.eq('approval_status', status);
     }
-    
-    const { data, error } = await query.order('created_at', { ascending: false });
+
+    if (role) {
+      query = query.eq('role', role);
+    }
+
+    if (fromDate) {
+      query = query.gte('created_at', new Date(fromDate).toISOString());
+    }
+
+    if (toDate) {
+      const endOfDay = new Date(toDate);
+      endOfDay.setHours(23, 59, 59, 999);
+      query = query.lte('created_at', endOfDay.toISOString());
+    }
+
+    const { data, count, error } = await query
+      .order(sortBy, { ascending: sortOrder === 'asc' })
+      .range(from, to);
 
     if (error) {
       return res.status(500).json({
@@ -108,10 +196,32 @@ router.get('/users', isAdmin, async (req, res) => {
       });
     }
 
+    const total = Number.isFinite(count) ? count : 0;
+    const totalPages = total === 0 ? 0 : Math.ceil(total / safeLimit);
+
     res.json({
       success: true,
       count: data.length,
-      users: data
+      users: data,
+      pagination: {
+        page,
+        limit: safeLimit,
+        search,
+        filters: {
+          status,
+          role,
+          fromDate,
+          toDate
+        },
+        sorting: {
+          sortBy,
+          sortOrder
+        },
+        total,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPreviousPage: page > 1
+      }
     });
   } catch (error) {
     res.status(500).json({

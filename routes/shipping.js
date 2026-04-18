@@ -873,6 +873,24 @@ router.get('/orders', authenticateToken, async (req, res) => {
 // Get orders for a specific user (admin or owner)
 router.get('/orders/user/:userId', authenticateToken, async (req, res) => {
   const { userId } = req.params;
+  const search = String(req.query.search || '').trim();
+  const status = String(req.query.status || '').trim();
+  const carrier = String(req.query.carrier || '').trim();
+  const fromDate = String(req.query.fromDate || '').trim();
+  const toDate = String(req.query.toDate || '').trim();
+  const sortBy = String(req.query.sortBy || 'created_at').trim();
+  const sortOrder = String(req.query.sortOrder || 'desc').trim().toLowerCase();
+
+  const parsePositiveInteger = (value, fallback) => {
+    if (value === undefined) return fallback;
+    if (typeof value === 'string' && !/^\d+$/.test(value.trim())) return NaN;
+
+    const parsed = Number.parseInt(value, 10);
+    return Number.isInteger(parsed) ? parsed : NaN;
+  };
+
+  const page = parsePositiveInteger(req.query.page, 1);
+  const limit = parsePositiveInteger(req.query.limit, 10);
 
   if (req.user.role !== 'admin') {
     return res.status(403).json({
@@ -881,17 +899,107 @@ router.get('/orders/user/:userId', authenticateToken, async (req, res) => {
     });
   }
 
-  const { data, error } = await supabaseAdmin
+  if (!Number.isInteger(page) || !Number.isInteger(limit) || page < 1 || limit < 1) {
+    return res.status(400).json({
+      success: false,
+      error: 'page and limit must be positive integers'
+    });
+  }
+
+  const isValidDate = (value) => !value || !Number.isNaN(Date.parse(value));
+
+  if (!isValidDate(fromDate) || !isValidDate(toDate)) {
+    return res.status(400).json({
+      success: false,
+      error: 'fromDate and toDate must be valid dates'
+    });
+  }
+
+  const allowedSortFields = new Set(['created_at', 'awb_number', 'status']);
+  const allowedSortOrders = new Set(['asc', 'desc']);
+
+  if (!allowedSortFields.has(sortBy)) {
+    return res.status(400).json({
+      success: false,
+      error: 'sortBy must be one of: created_at, awb_number, status'
+    });
+  }
+
+  if (!allowedSortOrders.has(sortOrder)) {
+    return res.status(400).json({
+      success: false,
+      error: 'sortOrder must be either asc or desc'
+    });
+  }
+
+  const safeLimit = Math.min(limit, 100);
+  const from = (page - 1) * safeLimit;
+  const to = from + safeLimit - 1;
+
+  let query = supabaseAdmin
     .from('orders')
-    .select('*')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false });
+    .select('*', { count: 'exact' })
+    .eq('user_id', userId);
+
+  if (search) {
+    const escapedSearch = search.replace(/[%_,]/g, '\\$&');
+    query = query.or(
+      `awb_number.ilike.%${escapedSearch}%,status.ilike.%${escapedSearch}%`
+    );
+  }
+
+  if (status) {
+    query = query.ilike('status', status);
+  }
+
+  if (carrier) {
+    query = query.filter('carrier->>name', 'ilike', carrier);
+  }
+
+  if (fromDate) {
+    query = query.gte('created_at', new Date(fromDate).toISOString());
+  }
+
+  if (toDate) {
+    const endOfDay = new Date(toDate);
+    endOfDay.setHours(23, 59, 59, 999);
+    query = query.lte('created_at', endOfDay.toISOString());
+  }
+
+  const { data, count, error } = await query
+    .order(sortBy, { ascending: sortOrder === 'asc' })
+    .range(from, to);
 
   if (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
 
-  res.json({ success: true, data });
+  const total = Number.isFinite(count) ? count : 0;
+  const totalPages = total === 0 ? 0 : Math.ceil(total / safeLimit);
+
+  res.json({
+    success: true,
+    data,
+    pagination: {
+      page,
+      limit: safeLimit,
+      search,
+      filters: {
+        status,
+        carrier,
+        fromDate,
+        toDate
+      },
+      sorting: {
+        sortBy,
+        sortOrder
+      },
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1
+    }
+  });
 });
 
 module.exports = router;
