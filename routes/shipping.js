@@ -8,8 +8,8 @@ const generateOrderPdf = require('../utils/generateOrderPdf');
 const uploadAwbToSupabase = require('../utils/uploadAWBtoSupabase');
 const {
   getChargeableWeight,
-  getFedExRatePerKg,
-  getTwentyOneKgOfferMessage
+  getOfferMessages,
+  getRatePerKg
 } = require('../utils/chargeableWeightOffers');
 
 const generateAWB = () => {
@@ -115,6 +115,7 @@ function normalizeInput(body) {
     destinationPincode: body.destinationPincode,
     weight: parseFloat(body.actualWeight),
     dimensions: parseDimensions(body),
+    boxes: parseBoxes(body.boxes),
     shipmentValue: parseOptionalNumber(body.shipmentValue),
     compliance: {
       requireBOE: parseBoolean(body.requireBOE),
@@ -162,6 +163,23 @@ function parseDimensions({ length, breadth, height }) {
 function parseOptionalNumber(val) {
   const num = parseFloat(val);
   return isNaN(num) ? null : num;
+}
+
+function parseBoxes(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  if (typeof value !== 'string' || !value.trim()) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
 }
 
 function parseBoolean(val) {
@@ -213,15 +231,15 @@ function generateQuotes(input, additionalCharges) {
   const chargeableWeight = getChargeableWeight(input.weight, input.dimensions);
 
   return carriers.map(carrier => {
-    const ratePerKg = carrier.name === 'FedEx'
-      ? getFedExRatePerKg({
-          pickupCountry: input.pickupCountry,
-          destinationCountry: input.destinationCountry,
-          actualWeight: input.weight,
-          chargeableWeight,
-          standardRatePerKg: carrier.rate
-        })
-      : carrier.rate;
+    const ratePerKg = getRatePerKg({
+      carrierName: carrier.name,
+      pickupCountry: input.pickupCountry,
+      destinationCountry: input.destinationCountry,
+      actualWeight: input.weight,
+      chargeableWeight,
+      standardRatePerKg: carrier.rate,
+      boxes: input.boxes
+    });
 
     const baseCost = input.weight * ratePerKg;
     const totalCost = baseCost + additionalCharges;
@@ -284,11 +302,13 @@ function calculateDeliveryDateTime(days) {
 
 // Build final response
 function buildResponse(input, quotes) {
-  const offerMessage = getTwentyOneKgOfferMessage({
+  const offers = getOfferMessages({
     pickupCountry: input.pickupCountry,
     destinationCountry: input.destinationCountry,
     actualWeight: input.weight,
-    dimensions: input.dimensions
+    chargeableWeight: getChargeableWeight(input.weight, input.dimensions),
+    dimensions: input.dimensions,
+    boxes: input.boxes
   });
 
   return {
@@ -311,7 +331,7 @@ function buildResponse(input, quotes) {
       ? { value: input.shipmentValue, currency: 'AED' }
       : null,
     compliance: input.compliance,
-    offers: offerMessage ? [offerMessage] : [],
+    offers,
     quotes,
     calculatedAt: new Date().toISOString()
   };
@@ -576,15 +596,15 @@ router.post(
         ratePerKg = quoteRateByCarrier[carrierName];
       }
 
-      if (carrierName === 'fedex') {
-        ratePerKg = getFedExRatePerKg({
-          pickupCountry,
-          destinationCountry,
-          actualWeight: declaredWeight,
-          chargeableWeight: totalChargeableWeight,
-          standardRatePerKg: ratePerKg
-        });
-      }
+      ratePerKg = getRatePerKg({
+        carrierName: parsedCarrier.carrier || parsedCarrier.name || carrierName,
+        pickupCountry,
+        destinationCountry,
+        actualWeight: declaredWeight,
+        chargeableWeight: totalChargeableWeight,
+        standardRatePerKg: ratePerKg,
+        boxes
+      });
 
       if (!ratePerKg && declaredWeight > 0) {
         const incomingCost = toNumber(parsedCarrier.cost, 0);
