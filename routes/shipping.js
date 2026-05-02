@@ -349,6 +349,14 @@ const parseOrderData = (req) => {
   };
       const orderFromBody = parseJsonField(req.body.order, null);
       const orderSource = orderFromBody || req.body;
+      const parsedBoxes = parseJsonField(orderSource.boxes, []);
+      const parsedCarrier = parseJsonField(orderSource.carrier, null);
+      const parsedCompliance = parseJsonField(orderSource.compliance, null);
+      const parsedPickupAddress = parseJsonField(orderSource.pickupAddress, null);
+      const parsedDestinationAddress = parseJsonField(orderSource.destinationAddress, null);
+      const parsedProducts = parseJsonField(orderSource.products, []);
+      const parsedPackages = parseJsonField(orderSource.packages, []);
+      const parsedOrderMeta = parseJsonField(orderSource.orderMeta, null);
 
       return {
       pickupCountry: orderSource.pickupCountry,
@@ -358,9 +366,25 @@ const parseOrderData = (req) => {
       actualWeight: orderSource.actualWeight,
       shipmentValue: orderSource.shipmentValue,
       addressFormId: orderSource.addressFormId,
-      boxes: parseJsonField(orderSource.boxes, []),
-      parsedCarrier: parseJsonField(orderSource.carrier, null),
-      parsedCompliance: parseJsonField(orderSource.compliance, null)
+      boxes: parsedBoxes,
+      parsedCarrier,
+      parsedCompliance,
+      pickupAddress: parsedPickupAddress,
+      destinationAddress: parsedDestinationAddress,
+      products: Array.isArray(parsedProducts) ? parsedProducts : [],
+      packages: Array.isArray(parsedPackages) ? parsedPackages : [],
+      orderMeta: parsedOrderMeta,
+      rawOrderData: {
+        ...orderSource,
+        boxes: parsedBoxes,
+        carrier: parsedCarrier,
+        compliance: parsedCompliance,
+        pickupAddress: parsedPickupAddress,
+        destinationAddress: parsedDestinationAddress,
+        products: Array.isArray(parsedProducts) ? parsedProducts : [],
+        packages: Array.isArray(parsedPackages) ? parsedPackages : [],
+        orderMeta: parsedOrderMeta
+      }
       };
 };
 
@@ -456,7 +480,13 @@ router.post(
       addressFormId,
       boxes,
       parsedCarrier,
-      parsedCompliance
+      parsedCompliance,
+      pickupAddress,
+      destinationAddress,
+      products,
+      packages,
+      orderMeta,
+      rawOrderData
     } = parseOrderData(req);
 
     if (
@@ -665,6 +695,15 @@ router.post(
       shipmentValue: shipmentValue
         ? { value: shipmentValue, currency: 'AED' }
         : null,
+      carrier: parsedCarrier,
+      addresses: {
+        pickup: pickupAddress,
+        destination: destinationAddress
+      },
+      products,
+      packages,
+      orderMeta,
+      submittedDetails: rawOrderData,
       status: 'CREATED',
       createdAt: new Date().toISOString()
     };
