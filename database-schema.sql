@@ -245,3 +245,17 @@ CREATE INDEX IF NOT EXISTS idx_order_address_forms_code
 CREATE INDEX IF NOT EXISTS idx_order_address_forms_submitted
   ON order_address_forms(is_submitted, submitted_at DESC);
 
+-- Create table for saved box details with retrievable prefixed code
+CREATE TABLE IF NOT EXISTS box_details (
+  box_detail_code TEXT PRIMARY KEY CHECK (box_detail_code ~ '^BOX-[0-9]{6}$'),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  details JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_box_details_user_id
+  ON box_details(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_box_details_created_at
+  ON box_details(created_at DESC);
+

@@ -10,6 +10,7 @@ const ticketRoutes = require("./routes/tickets");
 const billingRoutes = require("./routes/billing");
 const notificationRoutes = require("./routes/notifications");
 const addressFormRoutes = require("./routes/addressForms");
+const boxDetailsRoutes = require("./routes/boxDetails");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -37,6 +38,7 @@ app.use("/api/tickets", ticketRoutes);
 app.use("/api/billing", billingRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/address", addressFormRoutes);
+app.use("/api/box-details", boxDetailsRoutes);
 
 // test route
 app.get("/", (req, res) => {
