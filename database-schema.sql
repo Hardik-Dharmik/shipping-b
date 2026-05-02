@@ -259,3 +259,22 @@ CREATE INDEX IF NOT EXISTS idx_box_details_user_id
 CREATE INDEX IF NOT EXISTS idx_box_details_created_at
   ON box_details(created_at DESC);
 
+-- Create table for saved contact details used in create-order autofill
+CREATE TABLE IF NOT EXISTS contact_details (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  company_name TEXT NOT NULL,
+  normalized_company_name TEXT NOT NULL,
+  details JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()) NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()) NOT NULL,
+  CONSTRAINT contact_details_user_company_unique
+    UNIQUE (user_id, normalized_company_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contact_details_user_type_updated
+  ON contact_details(user_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_contact_details_company_name
+  ON contact_details(company_name);
+
