@@ -4,7 +4,7 @@ const { authenticateToken } = require('./auth');
 const { supabaseAdmin } = require('../supabase');
 
 const DEFAULT_CONTACT_TYPE = 'pickup';
-const ALLOWED_CONTACT_TYPES = new Set(['pickup', 'destination']);
+const ALLOWED_CONTACT_TYPES = new Set(['pickup', 'delivery']);
 
 const normalizeWhitespace = (value) => String(value || '').trim().replace(/\s+/g, ' ');
 const normalizeCompanyName = (value) => normalizeWhitespace(value).toLowerCase();
@@ -88,7 +88,7 @@ router.post('/', authenticateToken, async (req, res) => {
     if (!contactType) {
       return res.status(400).json({
         success: false,
-        error: 'contactType must be either pickup or destination'
+        error: 'contactType must be either pickup or delivery'
       });
     }
 
@@ -133,7 +133,7 @@ router.get('/suggestions', authenticateToken, async (req, res) => {
     if (!contactType) {
       return res.status(400).json({
         success: false,
-        error: 'contactType must be either pickup or destination'
+        error: 'contactType must be either pickup or delivery'
       });
     }
 
