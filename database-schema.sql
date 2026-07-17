@@ -9,6 +9,10 @@ CREATE TABLE IF NOT EXISTS users (
   company_name TEXT NOT NULL,
   file_url TEXT,
   file_name TEXT,
+  kyc_status TEXT DEFAULT 'not_started' CHECK (kyc_status IN ('not_started', 'pending', 'completed')),
+  credit_application_form_url TEXT,
+  trade_licence_url TEXT,
+  trn_licence_url TEXT,
   role TEXT DEFAULT 'user' CHECK (role IN ('user', 'admin')),
   approval_status TEXT DEFAULT 'pending' CHECK (approval_status IN ('pending', 'approved', 'rejected')),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()) NOT NULL,
@@ -28,6 +32,7 @@ CREATE POLICY "Service role can access all" ON users
 CREATE INDEX IF NOT EXISTS idx_users_approval_status ON users(approval_status);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+CREATE INDEX IF NOT EXISTS idx_users_kyc_status ON users(kyc_status);
 CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
 
 -- Function to automatically update updated_at timestamp

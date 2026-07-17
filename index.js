@@ -12,6 +12,7 @@ const notificationRoutes = require("./routes/notifications");
 const addressFormRoutes = require("./routes/addressForms");
 const boxDetailsRoutes = require("./routes/boxDetails");
 const contactDetailsRoutes = require("./routes/contactDetails");
+const kycRoutes = require("./routes/kyc");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -41,6 +42,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/address", addressFormRoutes);
 app.use("/api/box-details", boxDetailsRoutes);
 app.use("/api/contact-details", contactDetailsRoutes);
+app.use("/api/kyc", kycRoutes);
 
 // test route
 app.get("/", (req, res) => {

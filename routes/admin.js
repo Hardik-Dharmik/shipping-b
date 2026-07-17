@@ -19,7 +19,7 @@ const isAdmin = async (req, res, next) => {
         // Get user from database with role
         const { data: user, error } = await supabaseAdmin
           .from('users')
-          .select('id, name, email, role, approval_status')
+          .select('id, name, email, role, approval_status, kyc_status')
           .eq('id', decoded.userId)
           .single();
 
@@ -63,7 +63,7 @@ router.get('/pending', isAdmin, async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, role, file_url, file_name, approval_status, created_at')
+      .select('id, name, email, company_name, role, file_url, file_name, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at')
       .eq('approval_status', 'pending')
       .order('created_at', { ascending: false });
 
@@ -132,14 +132,15 @@ router.get('/users', isAdmin, async (req, res) => {
       'email',
       'company_name',
       'approval_status',
-      'role'
+      'role',
+      'kyc_status'
     ]);
     const allowedSortOrders = new Set(['asc', 'desc']);
 
     if (!allowedSortFields.has(sortBy)) {
       return res.status(400).json({
         success: false,
-        error: 'sortBy must be one of: created_at, updated_at, name, email, company_name, approval_status, role'
+        error: 'sortBy must be one of: created_at, updated_at, name, email, company_name, approval_status, role, kyc_status'
       });
     }
 
@@ -156,7 +157,7 @@ router.get('/users', isAdmin, async (req, res) => {
 
     let query = supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, role, file_url, file_name, approval_status, created_at, updated_at', {
+      .select('id, name, email, company_name, role, file_url, file_name, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at', {
         count: 'exact'
       });
 
@@ -238,7 +239,7 @@ router.get('/users-with-order-count', isAdmin, async (req, res) => {
 
     let query = supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, role, approval_status, created_at, updated_at, orders(count)');
+      .select('id, name, email, company_name, role, approval_status, kyc_status, created_at, updated_at, orders(count)');
 
     query = query.neq('role', 'admin');
 
@@ -284,7 +285,7 @@ router.get('/users/:id', isAdmin, async (req, res) => {
 
     const { data, error } = await supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, role, file_url, file_name, approval_status, created_at, updated_at')
+      .select('id, name, email, company_name, role, file_url, file_name, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at')
       .eq('id', id)
       .single();
 
@@ -509,4 +510,5 @@ router.post('/reject/bulk', isAdmin, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.isAdmin = isAdmin;
 
