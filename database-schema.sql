@@ -1,5 +1,14 @@
--- Create users table for registration
+-- Create organizations and users tables for registration
 -- Run this in Supabase SQL Editor
+
+CREATE TABLE IF NOT EXISTS organizations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_code TEXT NOT NULL UNIQUE CHECK (organization_code ~ '^ORG-[0-9]{6}$'),
+  name TEXT NOT NULL,
+  normalized_name TEXT NOT NULL UNIQUE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()) NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()) NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -7,6 +16,10 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   company_name TEXT NOT NULL,
+  organization_ref UUID REFERENCES organizations(id) ON DELETE SET NULL,
+  organization_code TEXT,
+  organization_role TEXT NOT NULL DEFAULT 'primary' CHECK (organization_role IN ('primary', 'employee')),
+  kyc_required BOOLEAN NOT NULL DEFAULT TRUE,
   file_url TEXT,
   file_name TEXT,
   kyc_status TEXT DEFAULT 'not_started' CHECK (kyc_status IN ('not_started', 'pending', 'completed')),
@@ -22,8 +35,15 @@ CREATE TABLE IF NOT EXISTS users (
 -- Enable Row Level Security (RLS)
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 
+ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
+
 -- Policy: Allow service role to access all (for server-side operations)
 CREATE POLICY "Service role can access all" ON users
+  FOR ALL
+  USING (true)
+  WITH CHECK (true);
+
+CREATE POLICY "Service role can access all organizations" ON organizations
   FOR ALL
   USING (true)
   WITH CHECK (true);
@@ -33,7 +53,12 @@ CREATE INDEX IF NOT EXISTS idx_users_approval_status ON users(approval_status);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE INDEX IF NOT EXISTS idx_users_kyc_status ON users(kyc_status);
+CREATE INDEX IF NOT EXISTS idx_users_kyc_required ON users(kyc_required);
+CREATE INDEX IF NOT EXISTS idx_users_organization_ref ON users(organization_ref);
+CREATE INDEX IF NOT EXISTS idx_users_organization_code ON users(organization_code);
 CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
+CREATE INDEX IF NOT EXISTS idx_organizations_code ON organizations(organization_code);
+CREATE INDEX IF NOT EXISTS idx_organizations_name ON organizations(normalized_name);
 
 -- Function to automatically update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -47,6 +72,12 @@ $$ language 'plpgsql';
 -- Trigger to update updated_at on row update
 CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_organizations_updated_at BEFORE UPDATE ON organizations
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+ALTER TABLE organizations
+ADD COLUMN IF NOT EXISTS created_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL;
 
 CREATE TABLE orders (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

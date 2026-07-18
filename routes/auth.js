@@ -32,7 +32,7 @@ const authenticateToken = async (req, res, next) => {
         // Get user from database
         const { data: user, error } = await supabaseAdmin
           .from('users')
-          .select('id, name, email, company_name, role, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url')
+          .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url')
           .eq('id', decoded.userId)
           .single();
 
@@ -93,7 +93,7 @@ router.post('/login', async (req, res) => {
     // Get user from database
     const { data: user, error } = await supabaseAdmin
       .from('users')
-      .select('id, name, email, password_hash, company_name, role, approval_status, file_url, file_name, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url')
+      .select('id, name, email, password_hash, company_name, organization_code, organization_role, kyc_required, role, approval_status, file_url, file_name, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url')
       .eq('email', email)
       .single();
 
@@ -134,6 +134,9 @@ router.post('/login', async (req, res) => {
         name: user.name,
         email: user.email,
         company_name: user.company_name,
+        organization_code: user.organization_code,
+        organization_role: user.organization_role,
+        kyc_required: user.kyc_required,
         role: user.role,
         approval_status: user.approval_status,
         kyc_status: user.kyc_status,
@@ -181,7 +184,7 @@ router.get('/me', authenticateToken, async (req, res) => {
   try {
     const { data: userProfile, error } = await supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, role, approval_status, file_url, file_name, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at')
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, approval_status, file_url, file_name, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at')
       .eq('id', req.user.id)
       .single();
 

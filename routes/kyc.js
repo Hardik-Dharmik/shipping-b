@@ -40,6 +40,7 @@ const upload = multer({
 const sanitizeFileName = (name) => name.replace(/[^a-zA-Z0-9._-]/g, '_');
 
 const buildKycPayload = (user) => ({
+  required: user.kyc_required,
   kyc_status: user.kyc_status,
   documents: {
     credit_application_form_url: user.credit_application_form_url,
@@ -81,6 +82,13 @@ router.post(
   ]),
   async (req, res) => {
     try {
+      if (req.user.kyc_required === false) {
+        return res.status(400).json({
+          success: false,
+          error: 'KYC is not required for employee accounts linked to an organization'
+        });
+      }
+
       const files = req.files || {};
       const creditApplicationForm = files.credit_application_form?.[0];
       const tradeLicence = files.trade_licence?.[0];
@@ -110,7 +118,7 @@ router.post(
         .from('users')
         .update(updatePayload)
         .eq('id', req.user.id)
-        .select('id, name, email, company_name, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, updated_at')
+        .select('id, name, email, company_name, organization_code, organization_role, kyc_required, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, updated_at')
         .single();
 
       if (error) {
@@ -136,7 +144,7 @@ router.get('/me', authenticateToken, async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, updated_at')
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, updated_at')
       .eq('id', req.user.id)
       .single();
 
@@ -167,7 +175,8 @@ router.get('/requests', isAdmin, async (req, res) => {
 
     let query = supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at')
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at')
+      .eq('kyc_required', true)
       .neq('kyc_status', KYC_STATUS.NOT_STARTED)
       .order('updated_at', { ascending: false });
 
@@ -220,7 +229,7 @@ router.patch('/users/:id/status', isAdmin, async (req, res) => {
         updated_at: new Date().toISOString()
       })
       .eq('id', id)
-      .select('id, name, email, company_name, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, updated_at')
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, updated_at')
       .single();
 
     if (error || !data) {

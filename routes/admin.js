@@ -19,7 +19,7 @@ const isAdmin = async (req, res, next) => {
         // Get user from database with role
         const { data: user, error } = await supabaseAdmin
           .from('users')
-          .select('id, name, email, role, approval_status, kyc_status')
+          .select('id, name, email, organization_code, organization_role, kyc_required, role, approval_status, kyc_status')
           .eq('id', decoded.userId)
           .single();
 
@@ -63,7 +63,7 @@ router.get('/pending', isAdmin, async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, role, file_url, file_name, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at')
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, file_url, file_name, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at')
       .eq('approval_status', 'pending')
       .order('created_at', { ascending: false });
 
@@ -157,7 +157,7 @@ router.get('/users', isAdmin, async (req, res) => {
 
     let query = supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, role, file_url, file_name, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at', {
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, file_url, file_name, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at', {
         count: 'exact'
       });
 
@@ -239,7 +239,7 @@ router.get('/users-with-order-count', isAdmin, async (req, res) => {
 
     let query = supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, role, approval_status, kyc_status, created_at, updated_at, orders(count)');
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, approval_status, kyc_status, created_at, updated_at, orders(count)');
 
     query = query.neq('role', 'admin');
 
@@ -285,7 +285,7 @@ router.get('/users/:id', isAdmin, async (req, res) => {
 
     const { data, error } = await supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, role, file_url, file_name, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at')
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, file_url, file_name, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at')
       .eq('id', id)
       .single();
 
@@ -342,7 +342,7 @@ router.patch('/approve/:id', isAdmin, async (req, res) => {
         updated_at: new Date().toISOString()
       })
       .eq('id', id)
-      .select('id, name, email, company_name, role, approval_status, updated_at')
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, approval_status, updated_at')
       .single();
 
     if (error) {
@@ -400,7 +400,7 @@ router.patch('/reject/:id', isAdmin, async (req, res) => {
         updated_at: new Date().toISOString()
       })
       .eq('id', id)
-      .select('id, name, email, company_name, role, approval_status, updated_at')
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, approval_status, updated_at')
       .single();
 
     if (error) {
@@ -444,7 +444,7 @@ router.post('/approve/bulk', isAdmin, async (req, res) => {
       })
       .in('id', ids)
       .eq('approval_status', 'pending')
-      .select('id, name, email, company_name, role, approval_status');
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, approval_status');
 
     if (error) {
       return res.status(500).json({
@@ -486,7 +486,7 @@ router.post('/reject/bulk', isAdmin, async (req, res) => {
       })
       .in('id', ids)
       .eq('approval_status', 'pending')
-      .select('id, name, email, company_name, role, approval_status');
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, approval_status');
 
     if (error) {
       return res.status(500).json({
