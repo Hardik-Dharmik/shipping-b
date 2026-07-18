@@ -9,7 +9,8 @@ const fs = require('fs');
 
 const ORGANIZATION_TYPES = {
   NEW: 'new',
-  EMPLOYEE: 'employee'
+  EMPLOYEE: 'employee',
+  EXISTING: 'existing'
 };
 
 const normalizeOrganizationName = (value) => String(value || '').trim().toLowerCase();
@@ -89,16 +90,12 @@ router.post('/',
       const organizationCodeInput = String(
         req.body.organization_code || req.body.organization_id || req.body.org_id || ''
       ).trim().toUpperCase();
-      const file = req.file;
       let resolvedOrganization = null;
 
       console.log('[REGISTER] Validating input fields');
       // Validate required fields
       if (!name || !email || !password) {
-        if (file) {
-          safeUnlink(file.path);
-          console.log('[REGISTER] Missing required fields - cleaned up file');
-        }
+        
         console.warn('[REGISTER] Registration failed - Missing required fields', {
           email: email || 'not provided',
           hasName: !!name,
@@ -112,20 +109,14 @@ router.post('/',
         });
       }
 
-      if (![ORGANIZATION_TYPES.NEW, ORGANIZATION_TYPES.EMPLOYEE].includes(organizationType)) {
-        if (file) {
-          safeUnlink(file.path);
-        }
+      if (![ORGANIZATION_TYPES.NEW, ORGANIZATION_TYPES.EMPLOYEE, ORGANIZATION_TYPES.EXISTING].includes(organizationType)) {
         return res.status(400).json({
           success: false,
-          error: 'organization_type must be either new or employee'
+          error: 'organization_type must be either new, employee, or existing'
         });
       }
 
       if (organizationType === ORGANIZATION_TYPES.NEW && !organizationName) {
-        if (file) {
-          safeUnlink(file.path);
-        }
         return res.status(400).json({
           success: false,
           error: 'organization_name is required for new organization registration'
@@ -133,36 +124,15 @@ router.post('/',
       }
 
       if (organizationType === ORGANIZATION_TYPES.EMPLOYEE && !organizationCodeInput) {
-        if (file) {
-          safeUnlink(file.path);
-        }
         return res.status(400).json({
           success: false,
           error: 'organization_code is required for employee registration'
         });
       }
 
-      // Validate file
-      if (!file) {
-        console.warn('[REGISTER] Registration failed - File not provided', { email });
-        return res.status(400).json({
-          success: false,
-          error: 'File is required'
-        });
-      }
-
-      console.log('[REGISTER] File received', {
-        filename: file.originalname,
-        size: file.size,
-        mimetype: file.mimetype
-      });
 
       // Validate password strength
       if (password.length < 6) {
-        if (file) {
-          safeUnlink(file.path);
-          console.log('[REGISTER] Password too short - cleaned up file');
-        }
         console.warn('[REGISTER] Registration failed - Password too short', {
           email,
           passwordLength: password.length
@@ -182,10 +152,6 @@ router.post('/',
         .single();
 
       if (existingUser) {
-        if (file) {
-          safeUnlink(file.path);
-          console.log('[REGISTER] User already exists - cleaned up file');
-        }
         console.warn('[REGISTER] Registration failed - User already exists', { email });
         return res.status(400).json({
           success: false,
@@ -193,7 +159,7 @@ router.post('/',
         });
       }
 
-      if (organizationType === ORGANIZATION_TYPES.EMPLOYEE) {
+      if (organizationType === ORGANIZATION_TYPES.EMPLOYEE || organizationType === ORGANIZATION_TYPES.EXISTING) {
         console.log('[REGISTER] Looking up organization for employee registration', {
           email,
           organizationCode: organizationCodeInput
@@ -210,7 +176,6 @@ router.post('/',
         }
 
         if (!existingOrganization) {
-          safeUnlink(file.path);
           return res.status(400).json({
             success: false,
             error: 'Organization ID not found'
@@ -226,72 +191,8 @@ router.post('/',
       const password_hash = await bcrypt.hash(password, saltRounds);
       console.log('[REGISTER] Password hashed successfully');
 
-      // Step 1: Upload file to Supabase Storage bucket "signup-files"
-      console.log('[REGISTER] Starting file upload to Supabase Storage', {
-        originalFilename: file.originalname,
-        localPath: file.path
-      });
-
-      const fileBuffer = fs.readFileSync(file.path);
-      const fileExt = path.extname(file.originalname);
-      const timestamp = Date.now();
-      const fileName = `${timestamp}-${Math.round(Math.random() * 1E9)}${fileExt}`;
-      const filePath = `signup-documents/${fileName}`;
-      uploadedStoragePath = filePath;
-
-      console.log('[REGISTER] Uploading file to storage', {
-        storagePath: filePath,
-        bucket: 'signup-files'
-      });
-
-      const { data: uploadData, error: uploadError } = await supabaseAdmin.storage
-        .from('signup-files')
-        .upload(filePath, fileBuffer, {
-          contentType: file.mimetype,
-          upsert: false
-        });
-
-      if (uploadError) {
-        fs.unlinkSync(file.path);
-        console.error('[REGISTER] File upload failed', {
-          email,
-          error: uploadError.message,
-          filePath
-        });
-        return res.status(500).json({
-          success: false,
-          error: `File upload failed: ${uploadError.message}`
-        });
-      }
-
-      console.log('[REGISTER] File uploaded successfully', {
-        filePath,
-        uploadData: uploadData?.path || uploadData
-      });
-
-      storageUploadCompleted = true;
-
-      // Get public URL for the uploaded file
-      console.log('[REGISTER] Generating public URL for file');
-      const urlData = supabaseAdmin.storage
-        .from('signup-files')
-        .getPublicUrl(filePath);
-
-      let publicUrl;
-      if (urlData.data && urlData.data.publicUrl) {
-        publicUrl = urlData.data.publicUrl;
-      } else if (urlData.publicUrl) {
-        publicUrl = urlData.publicUrl;
-      } else {
-        // Fallback: construct URL manually
-        const supabaseUrl = process.env.SUPABASE_URL;
-        publicUrl = `${supabaseUrl}/storage/v1/object/public/signup-files/${filePath}`;
-        console.log('[REGISTER] Using fallback URL construction');
-      }
-
-      console.log('[REGISTER] File URL generated', { publicUrl });
-
-      // Step 2: Save user to database with approval_status='pending' and role='user'
+      
+      // Step 2: Save user to database with role='user'
       if (organizationType === ORGANIZATION_TYPES.NEW) {
         const organizationCode = await generateOrganizationCode();
         const normalizedOrganizationName = normalizeOrganizationName(organizationName);
@@ -320,10 +221,9 @@ router.post('/',
         company_name: resolvedOrganization?.name || organizationName,
         organization_code: resolvedOrganization?.organization_code,
         organization_type: organizationType,
-        role: 'user',
-        approval_status: 'pending'
+        role: 'user'
       });
-
+      console.log(resolvedOrganization)
       const { data: userData, error: dbError } = await supabaseAdmin
         .from('users')
         .insert({
@@ -331,36 +231,18 @@ router.post('/',
           email: email,
           password_hash: password_hash,
           company_name: resolvedOrganization.name,
-          file_url: publicUrl,
-          file_name: file.originalname,
+          file_url: null,
+          file_name: null,
           organization_ref: resolvedOrganization.id,
           organization_code: resolvedOrganization.organization_code,
           organization_role: organizationType === ORGANIZATION_TYPES.EMPLOYEE ? 'employee' : 'primary',
           kyc_required: organizationType !== ORGANIZATION_TYPES.EMPLOYEE,
-          role: 'user', // Default role for regular users
-          approval_status: 'pending' // User needs admin approval
+          role: 'user' // Default role for regular users
         })
-        .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, approval_status, created_at')
+        .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, created_at')
         .single();
 
       if (dbError) {
-        // Clean up: delete uploaded file from storage and local file
-        console.error('[REGISTER] Database error - cleaning up uploaded file', {
-          email,
-          error: dbError.message,
-          filePath
-        });
-
-        if (uploadData) {
-          const { error: deleteError } = await supabaseAdmin.storage.from('signup-files').remove([filePath]);
-          if (deleteError) {
-            console.error('[REGISTER] Failed to delete file from storage during cleanup', {
-              error: deleteError.message
-            });
-          } else {
-            console.log('[REGISTER] File deleted from storage during cleanup');
-          }
-        }
         if (createdOrganizationId) {
           const { error: organizationCleanupError } = await supabaseAdmin
             .from('organizations')
@@ -375,7 +257,6 @@ router.post('/',
             });
           }
         }
-        safeUnlink(file.path);
         console.log('[REGISTER] Local file cleaned up');
         
         return res.status(500).json({
@@ -390,7 +271,6 @@ router.post('/',
       });
 
       // Clean up local file after successful upload
-      safeUnlink(file.path);
       console.log('[REGISTER] Local file cleaned up');
 
       if (createdOrganizationId) {
@@ -414,23 +294,11 @@ router.post('/',
 
       res.status(201).json({
         success: true,
-        message: 'Registration successful! Your account is pending admin approval.',
+        message: 'Registration successful!',
         user: userData
       });
 
     } catch (error) {
-      if (storageUploadCompleted && uploadedStoragePath) {
-        const { error: storageCleanupError } = await supabaseAdmin.storage
-          .from('signup-files')
-          .remove([uploadedStoragePath]);
-
-        if (storageCleanupError) {
-          console.error('[REGISTER] Failed to clean up uploaded storage file after error', {
-            path: uploadedStoragePath,
-            error: storageCleanupError.message
-          });
-        }
-      }
 
       if (createdOrganizationId) {
         const { error: organizationCleanupError } = await supabaseAdmin

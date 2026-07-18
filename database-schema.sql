@@ -27,7 +27,6 @@ CREATE TABLE IF NOT EXISTS users (
   trade_licence_url TEXT,
   trn_licence_url TEXT,
   role TEXT DEFAULT 'user' CHECK (role IN ('user', 'admin')),
-  approval_status TEXT DEFAULT 'pending' CHECK (approval_status IN ('pending', 'approved', 'rejected')),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()) NOT NULL,
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()) NOT NULL
 );
@@ -49,7 +48,6 @@ CREATE POLICY "Service role can access all organizations" ON organizations
   WITH CHECK (true);
 
 -- Create indexes for faster queries
-CREATE INDEX IF NOT EXISTS idx_users_approval_status ON users(approval_status);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE INDEX IF NOT EXISTS idx_users_kyc_status ON users(kyc_status);

@@ -14,7 +14,7 @@ WHERE role IS NULL;
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 
 -- Verify the changes
-SELECT id, name, email, role, approval_status 
+SELECT id, name, email, role
 FROM users 
 LIMIT 5;
 

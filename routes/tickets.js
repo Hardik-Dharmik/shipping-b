@@ -120,8 +120,7 @@ router.post('/create', authenticateToken, async (req, res) => {
       const { data: admins, error: adminError } = await supabaseAdmin
         .from('users')
         .select('id')
-        .eq('role', 'admin')
-        .eq('approval_status', 'approved');
+        .eq('role', 'admin');
 
       if (!adminError && admins && admins.length > 0) {
         const rows = admins.map((admin) => ({
@@ -487,8 +486,7 @@ router.post(
         const { data: admins, error: adminError } = await supabaseAdmin
           .from('users')
           .select('id')
-          .eq('role', 'admin')
-          .eq('approval_status', 'approved');
+          .eq('role', 'admin');
 
         if (!adminError && admins && admins.length > 0) {
           const rows = admins.map((admin) => ({

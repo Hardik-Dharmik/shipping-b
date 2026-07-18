@@ -54,12 +54,12 @@ const isAdmin = async (req, res, next) => {
         // Get user from database with role
         const { data: user, error } = await supabaseAdmin
           .from('users')
-          .select('id, name, email, role, approval_status')
+          .select('id, name, email, role')
           .eq('id', decoded.userId)
           .single();
 
-        if (!error && user && user.approval_status === 'approved' && user.role === 'admin') {
-          // User is authenticated, approved, and has admin role
+        if (!error && user && user.role === 'admin') {
+          // User is authenticated and has admin role
           req.user = user;
           return next();
         }

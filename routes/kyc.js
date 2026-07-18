@@ -175,7 +175,7 @@ router.get('/requests', isAdmin, async (req, res) => {
 
     let query = supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at')
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at')
       .eq('kyc_required', true)
       .neq('kyc_status', KYC_STATUS.NOT_STARTED)
       .order('updated_at', { ascending: false });

@@ -7,24 +7,20 @@ const { supabaseAdmin } = require('../supabase');
 // Accepts both JWT token (from login) and admin token (for direct admin access)
 const isAdmin = async (req, res, next) => {
   try {
-    // Option 1: Use JWT token from login (check if user has admin role)
     const authHeader = req.headers['authorization'];
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.substring(7);
-      
-      // Try to verify JWT token
+
       try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        
-        // Get user from database with role
+
         const { data: user, error } = await supabaseAdmin
           .from('users')
-          .select('id, name, email, organization_code, organization_role, kyc_required, role, approval_status, kyc_status')
+          .select('id, name, email, organization_code, organization_role, kyc_required, role, kyc_status')
           .eq('id', decoded.userId)
           .single();
 
-        if (!error && user && user.approval_status === 'approved' && user.role === 'admin') {
-          // User is authenticated, approved, and has admin role
+        if (!error && user && user.role === 'admin') {
           req.user = user;
           return next();
         }
@@ -40,7 +36,6 @@ const isAdmin = async (req, res, next) => {
       }
     }
 
-    // Option 2: Use admin token header (for direct admin access without login)
     const adminToken = req.headers['x-admin-token'];
     if (adminToken && adminToken === process.env.ADMIN_TOKEN) {
       return next();
@@ -58,40 +53,10 @@ const isAdmin = async (req, res, next) => {
   }
 };
 
-// Get all pending signups
-router.get('/pending', isAdmin, async (req, res) => {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('users')
-      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, file_url, file_name, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at')
-      .eq('approval_status', 'pending')
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      return res.status(500).json({
-        success: false,
-        error: error.message
-      });
-    }
-
-    res.json({
-      success: true,
-      count: data.length,
-      signups: data
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Get all users with optional status filter
+// Get all users with optional filters
 router.get('/users', isAdmin, async (req, res) => {
   try {
     const search = String(req.query.search || '').trim();
-    const status = String(req.query.status || '').trim();
     const role = String(req.query.role || '').trim();
     const fromDate = String(req.query.fromDate || '').trim();
     const toDate = String(req.query.toDate || '').trim();
@@ -131,7 +96,6 @@ router.get('/users', isAdmin, async (req, res) => {
       'name',
       'email',
       'company_name',
-      'approval_status',
       'role',
       'kyc_status'
     ]);
@@ -140,7 +104,7 @@ router.get('/users', isAdmin, async (req, res) => {
     if (!allowedSortFields.has(sortBy)) {
       return res.status(400).json({
         success: false,
-        error: 'sortBy must be one of: created_at, updated_at, name, email, company_name, approval_status, role, kyc_status'
+        error: 'sortBy must be one of: created_at, updated_at, name, email, company_name, role, kyc_status'
       });
     }
 
@@ -157,7 +121,7 @@ router.get('/users', isAdmin, async (req, res) => {
 
     let query = supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, file_url, file_name, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at', {
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, file_url, file_name, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at', {
         count: 'exact'
       });
 
@@ -166,10 +130,6 @@ router.get('/users', isAdmin, async (req, res) => {
       query = query.or(
         `name.ilike.%${escapedSearch}%,email.ilike.%${escapedSearch}%,company_name.ilike.%${escapedSearch}%`
       );
-    }
-
-    if (status) {
-      query = query.eq('approval_status', status);
     }
 
     if (role) {
@@ -209,7 +169,6 @@ router.get('/users', isAdmin, async (req, res) => {
         limit: safeLimit,
         search,
         filters: {
-          status,
           role,
           fromDate,
           toDate
@@ -235,17 +194,11 @@ router.get('/users', isAdmin, async (req, res) => {
 // Get all users with their order counts
 router.get('/users-with-order-count', isAdmin, async (req, res) => {
   try {
-    const { status } = req.query;
-
     let query = supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, approval_status, kyc_status, created_at, updated_at, orders(count)');
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, kyc_status, created_at, updated_at, orders(count)');
 
     query = query.neq('role', 'admin');
-
-    if (status) {
-      query = query.eq('approval_status', status);
-    }
 
     const { data, error } = await query.order('created_at', { ascending: false });
 
@@ -285,7 +238,7 @@ router.get('/users/:id', isAdmin, async (req, res) => {
 
     const { data, error } = await supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, file_url, file_name, approval_status, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at')
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, file_url, file_name, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at')
       .eq('id', id)
       .single();
 
@@ -308,207 +261,5 @@ router.get('/users/:id', isAdmin, async (req, res) => {
   }
 });
 
-// Approve a user
-router.patch('/approve/:id', isAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Check if user exists and is pending
-    const { data: existingUser, error: checkError } = await supabaseAdmin
-      .from('users')
-      .select('id, name, email, approval_status')
-      .eq('id', id)
-      .single();
-
-    if (checkError || !existingUser) {
-      return res.status(404).json({
-        success: false,
-        error: 'User not found'
-      });
-    }
-
-    if (existingUser.approval_status === 'approved') {
-      return res.status(400).json({
-        success: false,
-        error: 'User is already approved'
-      });
-    }
-
-    // Update user approval status
-    const { data, error } = await supabaseAdmin
-      .from('users')
-      .update({ 
-        approval_status: 'approved',
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', id)
-      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, approval_status, updated_at')
-      .single();
-
-    if (error) {
-      return res.status(500).json({
-        success: false,
-        error: error.message
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'User approved successfully',
-      user: data
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Reject a user
-router.patch('/reject/:id', isAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { reason } = req.body; // Optional rejection reason
-
-    // Check if user exists
-    const { data: existingUser, error: checkError } = await supabaseAdmin
-      .from('users')
-      .select('id, approval_status')
-      .eq('id', id)
-      .single();
-
-    if (checkError || !existingUser) {
-      return res.status(404).json({
-        success: false,
-        error: 'User not found'
-      });
-    }
-
-    if (existingUser.approval_status === 'rejected') {
-      return res.status(400).json({
-        success: false,
-        error: 'User is already rejected'
-      });
-    }
-
-    // Update user approval status
-    const { data, error } = await supabaseAdmin
-      .from('users')
-      .update({ 
-        approval_status: 'rejected',
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', id)
-      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, approval_status, updated_at')
-      .single();
-
-    if (error) {
-      return res.status(500).json({
-        success: false,
-        error: error.message
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'User rejected successfully',
-      user: data,
-      ...(reason && { reason })
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Bulk approve users
-router.post('/approve/bulk', isAdmin, async (req, res) => {
-  try {
-    const { ids } = req.body;
-
-    if (!ids || !Array.isArray(ids) || ids.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Please provide an array of user IDs'
-      });
-    }
-
-    const { data, error } = await supabaseAdmin
-      .from('users')
-      .update({ 
-        approval_status: 'approved',
-        updated_at: new Date().toISOString()
-      })
-      .in('id', ids)
-      .eq('approval_status', 'pending')
-      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, approval_status');
-
-    if (error) {
-      return res.status(500).json({
-        success: false,
-        error: error.message
-      });
-    }
-
-    res.json({
-      success: true,
-      message: `${data.length} user(s) approved successfully`,
-      approved: data
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Bulk reject users
-router.post('/reject/bulk', isAdmin, async (req, res) => {
-  try {
-    const { ids, reason } = req.body;
-
-    if (!ids || !Array.isArray(ids) || ids.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Please provide an array of user IDs'
-      });
-    }
-
-    const { data, error } = await supabaseAdmin
-      .from('users')
-      .update({ 
-        approval_status: 'rejected',
-        updated_at: new Date().toISOString()
-      })
-      .in('id', ids)
-      .eq('approval_status', 'pending')
-      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, approval_status');
-
-    if (error) {
-      return res.status(500).json({
-        success: false,
-        error: error.message
-      });
-    }
-
-    res.json({
-      success: true,
-      message: `${data.length} user(s) rejected successfully`,
-      rejected: data,
-      ...(reason && { reason })
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
 module.exports = router;
 module.exports.isAdmin = isAdmin;
-
