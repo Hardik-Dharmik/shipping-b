@@ -20,6 +20,8 @@ const generate6DigitCode = () => {
   return String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
 };
 
+const generateRateCalculatorCode = () => `RC-${generate6DigitCode()}`;
+
 const isDuplicateKeyError = (error) => {
   const message = String(error?.message || '').toLowerCase();
   return message.includes('duplicate key') || message.includes('unique');
@@ -87,7 +89,7 @@ router.post('/quote', authenticateToken, async (req, res) => {
     const charges = calculateCharges(input);
 
     // 3. Generate carrier quotes
-    const quotes = generateQuotes(input, charges.additionalCharges);
+    const quotes = generateQuotes(input, charges);
 
     // 4. Build response
     const response = buildResponse(input, quotes);
@@ -103,11 +105,128 @@ router.post('/quote', authenticateToken, async (req, res) => {
   }
 });
 
+// Save calculator fields so the signed-in user can load them in Create Order.
+router.post('/rate-calculator/save', authenticateToken, async (req, res) => {
+  try {
+    const input = normalizeInput(req.body);
+    const validationError = validateInput(input);
+    if (validationError) return res.status(400).json({ success: false, error: validationError });
+
+    const charges = calculateCharges(input);
+    const quoteData = buildResponse(input, generateQuotes(input, charges));
+    let saved = null;
+
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const { data, error } = await supabaseAdmin
+        .from('rate_calculator_saves')
+        .insert({
+          user_id: req.user.id,
+          code: generateRateCalculatorCode(),
+          form_data: req.body,
+          quote_data: quoteData
+        })
+        .select('id, code, form_data, quote_data, created_at')
+        .single();
+
+      if (!error) {
+        saved = data;
+        break;
+      }
+      if (!isDuplicateKeyError(error)) throw error;
+    }
+
+    if (!saved) throw new Error('Unable to generate a unique rate calculator code. Please retry.');
+
+    return res.status(201).json({
+      success: true,
+      message: 'Rate calculator details saved successfully',
+      data: {
+        code: saved.code,
+        formData: saved.form_data,
+        quote: saved.quote_data,
+        createdAt: saved.created_at
+      }
+    });
+  } catch (error) {
+    console.error('Save rate calculator error:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Internal server error' });
+  }
+});
+
+// Show the signed-in user's saved calculator entries, newest first.
+// This route must appear before /rate-calculator/:code.
+router.get('/rate-calculator/saved', authenticateToken, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('rate_calculator_saves')
+      .select('id, code, form_data, quote_data, created_at, updated_at')
+      .eq('user_id', req.user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    return res.json({
+      success: true,
+      data: (data || []).map((item) => ({
+        id: item.id,
+        code: item.code,
+        formData: item.form_data,
+        quote: item.quote_data,
+        createdAt: item.created_at,
+        updatedAt: item.updated_at
+      }))
+    });
+  } catch (error) {
+    console.error('List saved rate calculators error:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Internal server error' });
+  }
+});
+
+// Create Order calls this after the user enters an RC-XXXXXX code.
+router.get('/rate-calculator/:code', authenticateToken, async (req, res) => {
+  try {
+    const code = String(req.params.code || '').trim().toUpperCase();
+    if (!/^RC-\d{6}$/.test(code)) {
+      return res.status(400).json({ success: false, error: 'Code must be in the format RC-123456' });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('rate_calculator_saves')
+      .select('code, form_data, quote_data, created_at, updated_at')
+      .eq('code', code)
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (error || !data) return res.status(404).json({ success: false, error: 'Saved rate calculator details not found' });
+
+    return res.json({
+      success: true,
+      data: {
+        code: data.code,
+        formData: data.form_data,
+        quote: data.quote_data,
+        createdAt: data.created_at,
+        updatedAt: data.updated_at
+      }
+    });
+  } catch (error) {
+    console.error('Get saved rate calculator error:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Internal server error' });
+  }
+});
+
 
 // -------------------- HELPERS --------------------
 
 // Normalize & parse input
 function normalizeInput(body) {
+  const compliance = body.compliance && typeof body.compliance === 'object' && !Array.isArray(body.compliance)
+    ? body.compliance
+    : {};
+  const complianceValue = (name) => body[name] ?? compliance[name];
+  const otherCharges = parseOptionalNumber(
+    body.otherCharges ?? body.otherCharge ?? compliance.otherCharges ?? compliance.otherCharge
+  );
   return {
     pickupCountry: body.pickupCountry?.trim(),
     pickupPincode: body.pickupPincode,
@@ -118,10 +237,14 @@ function normalizeInput(body) {
     boxes: parseBoxes(body.boxes),
     shipmentValue: parseOptionalNumber(body.shipmentValue),
     compliance: {
-      requireBOE: parseBoolean(body.requireBOE),
-      requireDO: parseBoolean(body.requireDO),
-      tempExport: parseBoolean(body.temporaryExportForRepairAndReturn)
-    }
+      requireBOE: parseBoolean(complianceValue('requireBOE')),
+      requireDO: parseBoolean(complianceValue('requireDO')),
+      dutyExemption: parseBoolean(complianceValue('dutyExemption')),
+      tempExport: parseBoolean(complianceValue('temporaryExportForRepairAndReturn')),
+      exportDeclaration: parseBoolean(complianceValue('exportDeclaration'))
+    },
+    otherCharges: otherCharges === null ? 0 : otherCharges,
+    insurance: parseBoolean(complianceValue('insurance'))
   };
 }
 
@@ -144,6 +267,11 @@ function validateInput(input) {
 
   if (input.shipmentValue !== null && input.shipmentValue < 0) {
     return 'shipmentValue must be a non-negative number';
+  }
+
+  if (input.otherCharges < 0) return 'otherCharges must be a non-negative number';
+  if (input.insurance && (!input.shipmentValue || input.shipmentValue <= 0)) {
+    return 'shipmentValue is required when insurance is selected';
   }
 
   return null;
@@ -199,15 +327,22 @@ function calculateCharges(input) {
 
   const exportDeclarationCharge =
     isExportFromUAE(input.pickupCountry, input.destinationCountry) ? 120 : 0;
+  // Insurance is AED 45 or 2% of declared invoice value, whichever is higher.
+  const insuranceCharge = input.insurance
+    ? Math.max(45, Number((input.shipmentValue * 0.02).toFixed(2)))
+    : 0;
+  const otherCharges = input.otherCharges;
 
   const additionalCharges =
-    boeCharge + doCharge + tempExportCharge + exportDeclarationCharge;
+    boeCharge + doCharge + tempExportCharge + exportDeclarationCharge + insuranceCharge + otherCharges;
 
   return {
     boeCharge,
     doCharge,
     tempExportCharge,
     exportDeclarationCharge,
+    insuranceCharge,
+    otherCharges,
     additionalCharges
   };
 }
@@ -221,7 +356,7 @@ function isExportFromUAE(pickup, destination) {
 }
 
 // Generate quotes
-function generateQuotes(input, additionalCharges) {
+function generateQuotes(input, charges) {
   const carriers = [
     { name: 'DHL', rate: 10 },
     { name: 'FedEx', rate: 8 },
@@ -242,7 +377,7 @@ function generateQuotes(input, additionalCharges) {
     });
 
     const baseCost = input.weight * ratePerKg;
-    const totalCost = baseCost + additionalCharges;
+    const totalCost = baseCost + charges.additionalCharges;
 
     const days = randomBetween(3, 7);
     const delivery = calculateDeliveryDateTime(days);
@@ -261,7 +396,15 @@ function generateQuotes(input, additionalCharges) {
           : null,
         ratePerKg,
         baseShippingCost: baseCost,
-        additionalCharges,
+        complianceCharges: {
+          boeCharge: charges.boeCharge,
+          doCharge: charges.doCharge,
+          temporaryExportCharge: charges.tempExportCharge,
+          exportDeclarationCharge: charges.exportDeclarationCharge,
+          insuranceCharge: charges.insuranceCharge,
+          otherCharges: charges.otherCharges
+        },
+        additionalCharges: charges.additionalCharges,
         totalCost,
         currency: 'AED'
       }
@@ -331,6 +474,10 @@ function buildResponse(input, quotes) {
       ? { value: input.shipmentValue, currency: 'AED' }
       : null,
     compliance: input.compliance,
+    insurance: input.insurance
+      ? { selected: true, charge: calculateCharges(input).insuranceCharge, currency: 'AED' }
+      : { selected: false, charge: 0, currency: 'AED' },
+    otherCharges: { amount: input.otherCharges, currency: 'AED' },
     offers,
     quotes,
     calculatedAt: new Date().toISOString()
@@ -357,6 +504,10 @@ const parseOrderData = (req) => {
       const parsedProducts = parseJsonField(orderSource.products, []);
       const parsedPackages = parseJsonField(orderSource.packages, []);
       const parsedOrderMeta = parseJsonField(orderSource.orderMeta, null);
+      const otherCharges = parseOptionalNumber(
+        orderSource.otherCharges ?? orderSource.otherCharge ?? parsedCompliance?.otherCharges
+      );
+      const insurance = parseBoolean(orderSource.insurance ?? parsedCompliance?.insurance);
 
       return {
       pickupCountry: orderSource.pickupCountry,
@@ -365,6 +516,8 @@ const parseOrderData = (req) => {
       destinationPincode: orderSource.destinationPincode,
       actualWeight: orderSource.actualWeight,
       shipmentValue: orderSource.shipmentValue,
+      otherCharges: otherCharges === null ? 0 : otherCharges,
+      insurance,
       addressFormId: orderSource.addressFormId,
       boxes: parsedBoxes,
       parsedCarrier,
@@ -414,7 +567,7 @@ const getProcessedBoxes = (boxes) => {
     })
 }
 
-const getComplianceData = (parsedCompliance) => {
+const getComplianceData = (parsedCompliance, { insurance = false, shipmentValue = null, otherCharges = 0 } = {}) => {
     // Process compliance data
     let complianceData = {
       requireBOE: false,
@@ -422,7 +575,10 @@ const getComplianceData = (parsedCompliance) => {
       exportDeclaration: false,
       exportDeclarationCharge: 0,
       dutyExemption: false,
-      temporaryExportForRepairAndReturn: false
+      temporaryExportForRepairAndReturn: false,
+      insurance: Boolean(insurance),
+      insuranceCharge: 0,
+      otherCharges: Number(otherCharges) || 0
     };
 
     let totalComplianceCharges = 0;
@@ -453,6 +609,13 @@ const getComplianceData = (parsedCompliance) => {
         totalComplianceCharges += 380;
       }
     }
+
+    if (complianceData.insurance) {
+      complianceData.insuranceCharge = Math.max(45, Number((shipmentValue * 0.02).toFixed(2)));
+      totalComplianceCharges += complianceData.insuranceCharge;
+    }
+    totalComplianceCharges += complianceData.otherCharges;
+
     return {complianceData, totalComplianceCharges};
    }
 
@@ -477,6 +640,8 @@ router.post(
       destinationPincode,
       actualWeight,
       shipmentValue,
+      otherCharges,
+      insurance,
       addressFormId,
       boxes,
       parsedCarrier,
@@ -523,6 +688,14 @@ router.post(
         success: false,
         error: 'actualWeight must be a positive number'
       });
+    }
+
+    if (otherCharges < 0) {
+      return res.status(400).json({ success: false, error: 'otherCharges must be a non-negative number' });
+    }
+    const invoiceValue = parseOptionalNumber(shipmentValue);
+    if (insurance && (!invoiceValue || invoiceValue <= 0)) {
+      return res.status(400).json({ success: false, error: 'shipmentValue is required when insurance is selected' });
     }
 
     let addressForm = null;
@@ -579,7 +752,11 @@ router.post(
       };
     })
 
-    let {complianceData, totalComplianceCharges} = getComplianceData(parsedCompliance);
+    let {complianceData, totalComplianceCharges} = getComplianceData(parsedCompliance, {
+      insurance,
+      shipmentValue: invoiceValue,
+      otherCharges
+    });
 
     // 3. EXPORT DECLARATION (mandatory for export booking from UAE)
     const isExportFromUae = isExportFromUAE(pickupCountry, destinationCountry);
@@ -657,6 +834,8 @@ router.post(
         : 0;
       const temporaryExportForRepairAndReturnCharge =
         complianceData.temporaryExportForRepairAndReturn ? 380 : 0;
+      const insuranceCharge = complianceData.insuranceCharge || 0;
+      const otherCharge = complianceData.otherCharges || 0;
 
       parsedCarrier.cost = Number(finalCarrierCost.toFixed(2));
       parsedCarrier.currency = parsedCarrier.currency || 'AED';
@@ -668,7 +847,9 @@ router.post(
           boeCharge,
           doCharge,
           exportDeclarationCharge: Number(exportDeclarationCharge.toFixed(2)),
-          temporaryExportForRepairAndReturnCharge: Number(temporaryExportForRepairAndReturnCharge.toFixed(2))
+          temporaryExportForRepairAndReturnCharge: Number(temporaryExportForRepairAndReturnCharge.toFixed(2)),
+          insuranceCharge: Number(insuranceCharge.toFixed(2)),
+          otherCharges: Number(otherCharge.toFixed(2))
         },
         additionalCharges: Number(totalComplianceCharges.toFixed(2)),
         totalCost: Number(finalCarrierCost.toFixed(2)),
