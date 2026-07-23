@@ -94,10 +94,10 @@ router.post(
       const tradeLicence = files.trade_licence?.[0];
       const trnLicence = files.trn_licence?.[0];
 
-      if (!creditApplicationForm || !tradeLicence || !trnLicence) {
+      if (!creditApplicationForm || !tradeLicence ) {
         return res.status(400).json({
           success: false,
-          error: 'All three documents are required: credit_application_form, trade_licence, trn_licence'
+          error: 'All three documents are required: credit_application_form, trade_licence'
         });
       }
 

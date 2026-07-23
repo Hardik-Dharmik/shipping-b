@@ -13,6 +13,7 @@ const addressFormRoutes = require("./routes/addressForms");
 const boxDetailsRoutes = require("./routes/boxDetails");
 const contactDetailsRoutes = require("./routes/contactDetails");
 const kycRoutes = require("./routes/kyc");
+const aiRoutes = require("./routes/openai");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -43,6 +44,7 @@ app.use("/api/address", addressFormRoutes);
 app.use("/api/box-details", boxDetailsRoutes);
 app.use("/api/contact-details", contactDetailsRoutes);
 app.use("/api/kyc", kycRoutes);
+app.use("/api/ai", aiRoutes);
 
 // test route
 app.get("/", (req, res) => {
