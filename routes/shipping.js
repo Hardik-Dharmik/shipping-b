@@ -11,6 +11,9 @@ const {
   getOfferMessages,
   getRatePerKg
 } = require('../utils/chargeableWeightOffers');
+const { calculateCalculatorRates } = require('../fedex/rateService');
+const { createFedExShipment } = require('../fedex/shipmentService');
+const { uploadFedExLabel } = require('../fedex/labelStorage');
 
 const generateAWB = () => {
   return `AWB-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -89,7 +92,7 @@ router.post('/quote', authenticateToken, async (req, res) => {
     const charges = calculateCharges(input);
 
     // 3. Generate carrier quotes
-    const quotes = generateQuotes(input, charges);
+    const quotes = await generateQuotes(input, charges);
 
     // 4. Build response
     const response = buildResponse(input, quotes);
@@ -113,7 +116,7 @@ router.post('/rate-calculator/save', authenticateToken, async (req, res) => {
     if (validationError) return res.status(400).json({ success: false, error: validationError });
 
     const charges = calculateCharges(input);
-    const quoteData = buildResponse(input, generateQuotes(input, charges));
+    const quoteData = buildResponse(input, await generateQuotes(input, charges));
     let saved = null;
 
     for (let attempt = 0; attempt < 10; attempt++) {
@@ -356,7 +359,7 @@ function isExportFromUAE(pickup, destination) {
 }
 
 // Generate quotes
-function generateQuotes(input, charges) {
+async function generateQuotes(input, charges) {
   const carriers = [
     { name: 'DHL', rate: 10 },
     { name: 'FedEx', rate: 8 },
@@ -365,7 +368,9 @@ function generateQuotes(input, charges) {
 
   const chargeableWeight = getChargeableWeight(input.weight, input.dimensions);
 
-  return carriers.map(carrier => {
+  const nonFedExQuotes = carriers
+    .filter((carrier) => carrier.name !== 'FedEx')
+    .map(carrier => {
     const ratePerKg = getRatePerKg({
       carrierName: carrier.name,
       pickupCountry: input.pickupCountry,
@@ -409,7 +414,47 @@ function generateQuotes(input, charges) {
         currency: 'AED'
       }
     };
+    });
+
+  const fedexResponse = await calculateCalculatorRates(input);
+  const fedexQuotes = fedexResponse.quotes.map((quote) => {
+    const billingWeight = quote.billingWeight?.value || input.weight;
+    return {
+      carrier: 'FedEx',
+      serviceType: quote.serviceType,
+      serviceName: quote.serviceName,
+      packagingType: quote.packagingType,
+      cost: quote.totalNetCharge,
+      currency: quote.currency,
+      estimatedDeliveryDays: quote.estimatedDeliveryDays,
+      estimatedDelivery: quote.transitTime || null,
+      estimatedDeliveryDate: quote.deliveryTimestamp || null,
+      estimatedDeliveryTime: null,
+      estimatedDeliveryDateTime: null,
+      estimatedDeliveryReadable: quote.deliveryDay || null,
+      costBreakdown: {
+        weight: input.weight,
+        chargeableWeight: billingWeight,
+        ratePerKg: billingWeight ? Number((quote.totalNetCharge / billingWeight).toFixed(2)) : null,
+        baseShippingCost: quote.totalBaseCharge,
+        complianceCharges: {
+          boeCharge: 0,
+          doCharge: 0,
+          temporaryExportCharge: 0,
+          exportDeclarationCharge: 0,
+          insuranceCharge: 0,
+          otherCharges: 0
+        },
+        additionalCharges: quote.totalSurcharges,
+        totalCost: quote.totalNetCharge,
+        currency: quote.currency,
+        fedexSurcharges: quote.surcharges
+      },
+      customerMessages: quote.customerMessages
+    };
   });
+
+  return [...nonFedExQuotes, ...fedexQuotes];
 }
 
 // Date helpers
@@ -857,6 +902,53 @@ router.post(
       };
     }
 
+    let awbNumber = generateAWB();
+    let fedexShipment = null;
+    let fedexLabelUrl = null;
+    const carrierName = String(parsedCarrier.carrier || parsedCarrier.name || '').toLowerCase().trim();
+
+    if (carrierName === 'fedex') {
+      fedexShipment = await createFedExShipment({
+        pickupCountry,
+        pickupPincode,
+        destinationCountry,
+        destinationPincode,
+        pickupAddress,
+        destinationAddress,
+        boxes,
+        products,
+        shipmentValue: invoiceValue,
+        currency: parsedCarrier.currency,
+        serviceType: parsedCarrier.serviceType,
+        packagingType: parsedCarrier.packagingType,
+        user: req.user
+      });
+
+      if (!fedexShipment.trackingNumber) {
+        const error = new Error('FedEx did not return a tracking number for this shipment');
+        error.statusCode = 502;
+        error.code = 'FEDEX_INVALID_SHIPMENT_RESPONSE';
+        throw error;
+      }
+
+      awbNumber = fedexShipment.trackingNumber;
+      fedexLabelUrl = await uploadFedExLabel(
+        supabaseAdmin,
+        fedexShipment.label,
+        fedexShipment.trackingNumber,
+        fedexShipment.labelFormat
+      );
+      parsedCarrier.trackingNumber = fedexShipment.trackingNumber;
+      parsedCarrier.fedexShipment = {
+        transactionId: fedexShipment.transactionId,
+        serviceType: fedexShipment.serviceType,
+        shipDate: fedexShipment.shipDate,
+        labelFormat: fedexShipment.labelFormat,
+        labelUrl: fedexLabelUrl,
+        alerts: fedexShipment.alerts
+      };
+    }
+
     const orderPayload = {
       orderId: `ORD-${Date.now()}`,
       user: {
@@ -889,9 +981,13 @@ router.post(
       createdAt: new Date().toISOString()
     };
 
-    const awbNumber = generateAWB();
-
     orderPayload.awb_number = awbNumber;
+    if (fedexShipment) {
+      orderPayload.fedex_shipment = {
+        ...parsedCarrier.fedexShipment,
+        trackingNumber: fedexShipment.trackingNumber
+      };
+    }
 
     const invoiceFiles = req.files?.invoices || [];
     const packingListFiles = [
@@ -908,15 +1004,17 @@ router.post(
     orderPayload.invoice_urls = invoiceUrls;
     orderPayload.packing_list_urls = packingListUrls;
 
-    // Generate PDF
-    const pdfBuffer = await generateOrderPdf(orderPayload);
-
-    // Upload PDF
-    const pdfUrl = await uploadAwbToSupabase(
-      supabaseAdmin,
-      pdfBuffer,
-      awbNumber
-    );
+    // FedEx's generated label is the order PDF. For every other case, retain
+    // the existing internally generated order PDF as the fallback.
+    let pdfUrl = fedexLabelUrl;
+    if (!pdfUrl) {
+      const pdfBuffer = await generateOrderPdf(orderPayload);
+      pdfUrl = await uploadAwbToSupabase(
+        supabaseAdmin,
+        pdfBuffer,
+        awbNumber
+      );
+    }
 
     // Save order
     const { data, error } = await supabaseAdmin
@@ -955,9 +1053,11 @@ router.post(
     });
   } catch (error) {
     console.error('Create order error:', error);
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      error: error.message
+      error: error.message,
+      code: error.code,
+      details: error.details
     });
   }
 });
