@@ -3,26 +3,12 @@ const { getRateQuote, validatePostalCode, getServiceAvailability } = require('./
 
 const COUNTRY_CODE = /^[A-Z]{2}$/;
 const CURRENCY_CODE = /^[A-Z]{3}$/;
-const COUNTRIES = [
-  { name: 'UAE', code: 'AE' },
-  { name: 'GERMANY', code: 'DE' },
-  { name: 'UK', code: 'GB' },
-  { name: 'USA', code: 'US' },
-  { name: 'INDIA', code: 'IN' },
-  { name: 'CHINA', code: 'CN' },
-  { name: 'SOUTH KOREA', code: 'KR' },
-  { name: 'FRANCE', code: 'FR' },
-  { name: 'AUSTRALIA', code: 'AU' },
-  { name: 'CANADA', code: 'CA' },
-  { name: 'SAUDI', code: 'SA' },
-  { name: 'BAHRAIN', code: 'BH' },
-  { name: 'OMAN', code: 'OM' },
-  { name: 'QATAR', code: 'QA' },
-  { name: 'EGYPT', code: 'EG' }
-];
 
+// Use the comprehensive country list from data/countryCodes.json to
+// resolve full country names to their two-letter ISO codes.
+const countryData = require('../data/countryCodes.json');
 const COUNTRY_NAMES = Object.fromEntries(
-  COUNTRIES.map(({ name, code }) => [name.toLowerCase(), code])
+  countryData.map((c) => [String(c.name || '').toLowerCase().replace(/[.,()]/g, '').replace(/\s+/g, ' '), c.code])
 );
 
 function asPositiveNumber(value) {
