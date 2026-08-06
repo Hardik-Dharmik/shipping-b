@@ -11,7 +11,7 @@ const {
   getOfferMessages,
   getRatePerKg
 } = require('../utils/chargeableWeightOffers');
-const { calculateCalculatorRates } = require('../fedex/rateService');
+const { calculateCalculatorRates, calculateValidatedCalculatorRates } = require('../fedex/rateService');
 const { createFedExShipment } = require('../fedex/shipmentService');
 const { uploadFedExLabel } = require('../fedex/labelStorage');
 
@@ -100,10 +100,57 @@ router.post('/quote', authenticateToken, async (req, res) => {
     return res.json({ success: true, data: response });
 
   } catch (error) {
-    console.error('Shipping quote error:', error);
-    return res.status(500).json({
+    console.error('Shipping quote error:', error.code, error.message, error.details || []);
+    return res.status(error.statusCode || 500).json({
       success: false,
-      error: error.message || 'Internal server error'
+      error: error.message || 'Internal server error',
+      code: error.code,
+      details: error.details,
+      fedexTransactionId: error.fedexTransactionId
+    });
+  }
+});
+
+// Validated quote workflow: address checks -> service availability -> live rates.
+router.post('/quote/validated', authenticateToken, async (req, res) => {
+  try {
+    const input = normalizeInput(req.body);
+    const validationError = validateInput(input);
+    if (validationError) return res.status(400).json({ success: false, error: validationError });
+
+    const fedex = await calculateValidatedCalculatorRates(input);
+    const charges = calculateCharges(input);
+    const quotes = await generateQuotes(input, charges, fedex);
+    const response = buildResponse(input, quotes);
+
+    console.log('Validated shipping quote response:', JSON.stringify(response, null, 2));
+
+    return res.json({
+      success: true,
+      data: {
+        ...response,
+        workflow: {
+          addressValidation: {
+            fedex: fedex.validation,
+            dhl: { status: 'NOT_INTEGRATED' },
+            ups: { status: 'NOT_INTEGRATED' }
+          },
+          serviceAvailability: {
+            fedex: fedex.serviceAvailability,
+            dhl: { status: 'NOT_INTEGRATED' },
+            ups: { status: 'NOT_INTEGRATED' }
+          }
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Validated shipping quote error:', error.code, error.message);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message || 'Unable to generate validated quote',
+      code: error.code,
+      details: error.details,
+      fedexTransactionId: error.fedexTransactionId
     });
   }
 });
@@ -359,7 +406,7 @@ function isExportFromUAE(pickup, destination) {
 }
 
 // Generate quotes
-async function generateQuotes(input, charges) {
+async function generateQuotes(input, charges, fedexResponse = null) {
   const carriers = [
     { name: 'DHL', rate: 10 },
     { name: 'FedEx', rate: 8 },
@@ -416,44 +463,103 @@ async function generateQuotes(input, charges) {
     };
     });
 
-  const fedexResponse = await calculateCalculatorRates(input);
-  const fedexQuotes = fedexResponse.quotes.map((quote) => {
-    const billingWeight = quote.billingWeight?.value || input.weight;
-    return {
-      carrier: 'FedEx',
-      serviceType: quote.serviceType,
-      serviceName: quote.serviceName,
-      packagingType: quote.packagingType,
-      cost: quote.totalNetCharge,
-      currency: quote.currency,
-      estimatedDeliveryDays: quote.estimatedDeliveryDays,
-      estimatedDelivery: quote.transitTime || null,
-      estimatedDeliveryDate: quote.deliveryTimestamp || null,
-      estimatedDeliveryTime: null,
-      estimatedDeliveryDateTime: null,
-      estimatedDeliveryReadable: quote.deliveryDay || null,
-      costBreakdown: {
-        weight: input.weight,
-        chargeableWeight: billingWeight,
-        ratePerKg: billingWeight ? Number((quote.totalNetCharge / billingWeight).toFixed(2)) : null,
-        baseShippingCost: quote.totalBaseCharge,
-        complianceCharges: {
-          boeCharge: 0,
-          doCharge: 0,
-          temporaryExportCharge: 0,
-          exportDeclarationCharge: 0,
-          insuranceCharge: 0,
-          otherCharges: 0
-        },
-        additionalCharges: quote.totalSurcharges,
-        totalCost: quote.totalNetCharge,
-        currency: quote.currency,
-        fedexSurcharges: quote.surcharges
-      },
-      customerMessages: quote.customerMessages
-    };
-  });
+  fedexResponse = fedexResponse || await calculateCalculatorRates(input);
+  // const fedexQuotes = fedexResponse.quotes.map((quote) => {
+  //   const billingWeight = quote.billingWeight?.value || input.weight;
+  //   return {
+  //     carrier: 'FedEx',
+  //     serviceType: quote.serviceType,
+  //     serviceName: quote.serviceName,
+  //     packagingType: quote.packagingType,
+  //     cost: quote.totalNetCharge,
+  //     currency: quote.currency,
+  //     estimatedDeliveryDays: quote.estimatedDeliveryDays,
+  //     estimatedDelivery: quote.transitTime || quote.deliveryMessage || null,
+  //     estimatedDeliveryDate: quote.deliveryTimestamp || null,
+  //     estimatedDeliveryTime: null,
+  //     estimatedDeliveryDateTime: null,
+  //     estimatedDeliveryReadable: quote.deliveryDay || quote.deliveryMessage || null,
+  //     costBreakdown: {
+  //       weight: input.weight,
+  //       chargeableWeight: billingWeight,
+  //       ratePerKg: billingWeight ? Number((quote.totalNetCharge / billingWeight).toFixed(2)) : null,
+  //       baseShippingCost: quote.totalBaseCharge,
+  //       complianceCharges: {
+  //         boeCharge: 0,
+  //         doCharge: 0,
+  //         temporaryExportCharge: 0,
+  //         exportDeclarationCharge: 0,
+  //         insuranceCharge: 0,
+  //         otherCharges: 0
+  //       },
+  //       additionalCharges: quote.totalSurcharges,
+  //       totalCost: quote.totalNetCharge,
+  //       currency: quote.currency,
+  //       fedexSurcharges: quote.surcharges
+  //     },
+  //     customerMessages: quote.customerMessages
+  //   };
+  // });
+const fedexQuotes = fedexResponse.quotes.map((quote) => {
+  const billingWeight = quote.billingWeight?.value || input.weight;
 
+  const fedexTotal = Number(quote.totalNetCharge || 0);
+
+  const finalTotal = fedexTotal + charges.additionalCharges;
+
+  return {
+    carrier: "FedEx",
+    serviceType: quote.serviceType,
+    serviceName: quote.serviceName,
+    packagingType: quote.packagingType,
+
+    // include compliance charges
+    cost: finalTotal,
+
+    currency: quote.currency,
+
+    estimatedDeliveryDays: quote.estimatedDeliveryDays,
+    estimatedDelivery: quote.transitTime || quote.deliveryMessage || null,
+    estimatedDeliveryDate: quote.deliveryTimestamp || null,
+    estimatedDeliveryTime: null,
+    estimatedDeliveryDateTime: null,
+    estimatedDeliveryReadable:
+      quote.deliveryDay || quote.deliveryMessage || null,
+
+    costBreakdown: {
+      weight: input.weight,
+      chargeableWeight: billingWeight,
+
+      ratePerKg:
+        billingWeight
+          ? Number((quote.totalBaseCharge / billingWeight).toFixed(2))
+          : null,
+
+      baseShippingCost: quote.totalBaseCharge,
+
+      complianceCharges: {
+        boeCharge: charges.boeCharge,
+        doCharge: charges.doCharge,
+        temporaryExportCharge: charges.tempExportCharge,
+        exportDeclarationCharge: charges.exportDeclarationCharge,
+        insuranceCharge: charges.insuranceCharge,
+        otherCharges: charges.otherCharges
+      },
+
+      // FedEx API surcharges + your compliance charges
+      additionalCharges:
+        quote.totalSurcharges + charges.additionalCharges,
+
+      totalCost: finalTotal,
+
+      currency: quote.currency,
+
+      fedexSurcharges: quote.surcharges
+    },
+
+    customerMessages: quote.customerMessages
+  };
+});
   return [...nonFedExQuotes, ...fedexQuotes];
 }
 

@@ -1,5 +1,5 @@
 const { fedexConfig } = require('./config');
-const { getRateQuote } = require('./client');
+const { getRateQuote, validatePostalCode, getServiceAvailability } = require('./client');
 
 const COUNTRY_CODE = /^[A-Z]{2}$/;
 const CURRENCY_CODE = /^[A-Z]{3}$/;
@@ -128,7 +128,7 @@ function toFedExPayload(body) {
 
   const payload = {
     accountNumber: { value: fedexConfig.accountNumber },
-    rateRequestControlParameters:{returnTransitTimes:true},
+    returnTransitTimes: true,
     requestedShipment: {
       shipper: {
         address: {
@@ -166,8 +166,10 @@ function toFedExPayload(body) {
     );
     const commodity = {
       description: String(body.commodityDescription || 'Shipment contents'),
+      name: String(body.commodityDescription || 'Shipment contents'),
       quantity: 1,
       quantityUnits: 'PCS',
+      numberOfPieces: 1,
       countryOfManufacture: originCountry,
       weight: { units: String(body.weightUnit || 'KG').toUpperCase(), value: totalWeight },
       unitPrice: { amount: shipmentValue, currency: shipmentCurrency },
@@ -224,7 +226,8 @@ function normalizeRateResponse(response) {
         estimatedDeliveryDays: transitDays(commit),
         deliveryTimestamp: dateDetail.dayFormat || dateDetail.date || null,
         transitTime: commit.transitTime || null,
-        deliveryDay: dateDetail.dayOfWeek || null
+        deliveryDay: dateDetail.dayOfWeek || null,
+        deliveryMessage: commit.label || commit.commitMessageDetails || null
       };
     })
   };
@@ -234,6 +237,47 @@ async function calculateRates(body) {
   const payload = toFedExPayload(body);
   const response = await getRateQuote(payload);
   return normalizeRateResponse(response);
+}
+
+function postalPayload(address) {
+  return {
+    carrierCode: 'FDXE',
+    countryCode: address.countryCode,
+    postalCode: address.postalCode,
+    shipDate: currentShipDate()
+  };
+}
+
+function serviceAvailabilityPayload(ratePayload) {
+  const shipment = ratePayload.requestedShipment;
+  return {
+    accountNumber: ratePayload.accountNumber,
+    carrierCodes: ['FDXE'],
+    requestedShipment: {
+      shipDatestamp: shipment.shipDateStamp,
+      pickupType: shipment.pickupType,
+      packagingType: shipment.packagingType || 'YOUR_PACKAGING',
+      shipper: shipment.shipper,
+      recipients: [{ address: shipment.recipient.address }],
+      requestedPackageLineItems: shipment.requestedPackageLineItems,
+      ...(shipment.customsClearanceDetail ? { customsClearanceDetail: shipment.customsClearanceDetail } : {})
+    }
+  };
+}
+
+async function calculateValidatedRates(body) {
+  const payload = toFedExPayload(body);
+  const [origin, destination] = await Promise.all([
+    validatePostalCode(postalPayload(payload.requestedShipment.shipper.address)),
+    validatePostalCode(postalPayload(payload.requestedShipment.recipient.address))
+  ]);
+  const availability = await getServiceAvailability(serviceAvailabilityPayload(payload));
+  const rates = await getRateQuote(payload);
+  return {
+    ...normalizeRateResponse(rates),
+    validation: { origin: origin.output || origin, destination: destination.output || destination },
+    serviceAvailability: availability.output || availability
+  };
 }
 
 function toCalculatorRateRequest(input) {
@@ -284,11 +328,17 @@ async function calculateCalculatorRates(input) {
   return calculateRates(toCalculatorRateRequest(input));
 }
 
+async function calculateValidatedCalculatorRates(input) {
+  return calculateValidatedRates(toCalculatorRateRequest(input));
+}
+
 module.exports = {
   calculateRates,
   calculateCalculatorRates,
+  calculateValidatedCalculatorRates,
   toCalculatorRateRequest,
   toFedExPayload,
+  serviceAvailabilityPayload,
   normalizeRateResponse,
   resolveCountryCode: countryCode
 };

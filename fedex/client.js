@@ -22,14 +22,45 @@ async function readResponse(response) {
 }
 
 function createFedExError(message, response, body) {
-  const error = new Error(message);
-  error.statusCode = response?.status === 401 ? 502 : 502;
-  error.code = 'FEDEX_API_ERROR';
-  error.details = body?.errors?.map((item) => ({
+  const details = body?.errors?.map((item) => ({
     code: item.code,
     message: item.message
   })) || [];
+  const fedexMessage = details.map((item) => item.message).filter(Boolean).join('; ');
+  const error = new Error(fedexMessage || body?.message || message);
+  error.statusCode = response?.status >= 400 && response.status < 500 ? 422 : 502;
+  error.code = 'FEDEX_API_ERROR';
+  error.details = details;
+  error.fedexTransactionId = body?.transactionId;
   return error;
+}
+
+function logFedExFailure(path, response, body) {
+  console.error('FedEx API request failed', {
+    path,
+    status: response.status,
+    transactionId: body?.transactionId,
+    errors: body?.errors || [],
+    message: body?.message
+  });
+}
+
+function redactForLog(value, key = '') {
+  const sensitiveKeys = new Set(['client_id', 'client_secret', 'child_key', 'child_secret', 'authorization']);
+  if (sensitiveKeys.has(key.toLowerCase())) return '[REDACTED]';
+  if (Array.isArray(value)) return value.map((item) => redactForLog(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([entryKey, entryValue]) => [
+      entryKey,
+      redactForLog(entryValue, entryKey)
+    ]));
+  }
+  return value;
+}
+
+function logFedExPayload(path, payload) {
+  if (!fedexConfig.logPayloads) return;
+  console.log(`FedEx API request payload [${path}]: ${JSON.stringify(redactForLog(payload))}`);
 }
 
 async function requestAccessToken() {
@@ -61,6 +92,7 @@ async function requestAccessToken() {
 
   const body = await readResponse(response);
   if (!response.ok || !body.access_token) {
+    logFedExFailure('/oauth/token', response, body);
     throw createFedExError('FedEx authorization failed', response, body);
   }
 
@@ -79,14 +111,15 @@ async function getAccessToken() {
 }
 
 async function getRateQuote(payload) {
-  return requestFedEx('/rate/v1/rates/quotes', payload);
+  return requestFedEx('/rate/v1/rates/quotes', payload, 'FedEx rate request failed');
 }
 
-async function requestFedEx(path, payload) {
+async function requestFedEx(path, payload, errorMessage = 'FedEx API request failed') {
   const token = await getAccessToken();
   let response;
 
   try {
+    logFedExPayload(path, payload);
     response = await fetchWithTimeout(`${fedexConfig.baseUrl}${path}`, {
       method: 'POST',
       headers: {
@@ -96,9 +129,8 @@ async function requestFedEx(path, payload) {
       },
       body: JSON.stringify(payload)
     });
-    console.log(JSON.stringify(response))
   } catch (cause) {
-    const error = new Error('Unable to connect to FedEx rate service');
+    const error = new Error('Unable to connect to FedEx service');
     error.statusCode = 502;
     error.code = 'FEDEX_CONNECTION_ERROR';
     error.cause = cause;
@@ -106,17 +138,23 @@ async function requestFedEx(path, payload) {
   }
 
   const body = await readResponse(response);
-  if (!response.ok) throw createFedExError('FedEx rate request failed', response, body);
+  if (!response.ok) {
+    logFedExFailure(path, response, body);
+    throw createFedExError(errorMessage, response, body);
+  }
   return body;
 }
 
 async function createShipment(payload) {
-  try {
-    return await requestFedEx('/ship/v1/shipments', payload);
-  } catch (error) {
-    if (error.code === 'FEDEX_API_ERROR') error.message = 'FedEx shipment creation failed';
-    throw error;
-  }
+  return requestFedEx('/ship/v1/shipments', payload, 'FedEx shipment creation failed');
 }
 
-module.exports = { getRateQuote, createShipment };
+function validatePostalCode(payload) {
+  return requestFedEx('/country/v1/postal/validate', payload, 'FedEx postal code validation failed');
+}
+
+function getServiceAvailability(payload) {
+  return requestFedEx('/availability/v1/transittimes', payload, 'FedEx service availability check failed');
+}
+
+module.exports = { getRateQuote, createShipment, validatePostalCode, getServiceAvailability };

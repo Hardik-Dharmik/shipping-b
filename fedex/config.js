@@ -11,6 +11,7 @@ const fedexConfig = {
   childKey: process.env.FEDEX_CHILD_KEY,
   childSecret: process.env.FEDEX_CHILD_SECRET,
   defaultServiceType: process.env.FEDEX_DEFAULT_SERVICE_TYPE || 'FEDEX_INTERNATIONAL_PRIORITY',
+  logPayloads: process.env.FEDEX_LOG_PAYLOADS !== 'false',
   requestTimeoutMs: Number(process.env.FEDEX_REQUEST_TIMEOUT_MS || 10000)
 };
 

@@ -20,6 +20,9 @@ FEDEX_API_BASE_URL=https://apis-sandbox.fedex.com
 FEDEX_GRANT_TYPE=client_credentials
 # Used only when the frontend does not send the serviceType selected from the rate quote.
 FEDEX_DEFAULT_SERVICE_TYPE=FEDEX_INTERNATIONAL_PRIORITY
+# Enabled by default. Logs complete outbound FedEx business payloads; OAuth secrets/tokens are never logged.
+# Set false to disable FedEx outbound payload logs.
+FEDEX_LOG_PAYLOADS=false
 # Only for FedEx child-account integrations.
 FEDEX_CHILD_KEY=
 FEDEX_CHILD_SECRET=
