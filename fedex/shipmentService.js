@@ -4,6 +4,39 @@ const { resolveCountryCode } = require('./rateService');
 
 const getFirst = (...values) => values.find((value) => value !== undefined && value !== null && String(value).trim() !== '');
 
+// These are the four Section II battery types shown by FedEx Ship Manager.
+// They do not cover standalone batteries or lithium shipments that need a full
+// Dangerous Goods Shipper's Declaration.
+const LITHIUM_BATTERY_TYPES = {
+  LITHIUM_METAL_CONTAINED_IN_EQUIPMENT: {
+    label: 'Metal contained in equipment (UN3091, PI970)',
+    batteryMaterialType: 'LITHIUM_METAL',
+    batteryPackingType: 'CONTAINED_IN_EQUIPMENT'
+  },
+  LITHIUM_METAL_PACKED_WITH_EQUIPMENT: {
+    label: 'Metal packed with equipment (UN3091, PI969)',
+    batteryMaterialType: 'LITHIUM_METAL',
+    batteryPackingType: 'PACKED_WITH_EQUIPMENT'
+  },
+  LITHIUM_ION_CONTAINED_IN_EQUIPMENT: {
+    label: 'Ion contained in equipment (UN3481, PI967)',
+    batteryMaterialType: 'LITHIUM_ION',
+    batteryPackingType: 'CONTAINED_IN_EQUIPMENT'
+  },
+  LITHIUM_ION_PACKED_WITH_EQUIPMENT: {
+    label: 'Ion packed with equipment (UN3481, PI966)',
+    batteryMaterialType: 'LITHIUM_ION',
+    batteryPackingType: 'PACKED_WITH_EQUIPMENT'
+  }
+};
+
+function asStringArray(value) {
+  if (value === undefined || value === null || value === '') return [];
+  return (Array.isArray(value) ? value : [value])
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+}
+
 function shipmentValidationError(details) {
   const error = new Error('FedEx shipment information is incomplete');
   error.statusCode = 400;
@@ -58,7 +91,64 @@ function buildParty(address = {}, fallback = {}, country, postalCode, label) {
   };
 }
 
-function buildPackages(boxes) {
+function buildPackageSpecialServices(fedexOptions = {}) {
+  if (!fedexOptions || typeof fedexOptions !== 'object' || Array.isArray(fedexOptions)) return null;
+
+  const selectedBatteryTypes = [...new Set(asStringArray(
+    fedexOptions.lithiumBatteryTypes ?? fedexOptions.lithiumBatteryType
+  ))];
+  const invalidBatteryTypes = selectedBatteryTypes.filter((type) => !LITHIUM_BATTERY_TYPES[type]);
+  if (invalidBatteryTypes.length) {
+    throw shipmentValidationError([`Unsupported lithium battery option(s): ${invalidBatteryTypes.join(', ')}`]);
+  }
+
+  const dangerousGoods = fedexOptions.dangerousGoods;
+  const specialServiceTypes = [];
+  const packageSpecialServices = {};
+
+  if (selectedBatteryTypes.length) {
+    specialServiceTypes.push('BATTERY');
+    packageSpecialServices.batteryDetails = selectedBatteryTypes.map((type) => ({
+      batteryMaterialType: LITHIUM_BATTERY_TYPES[type].batteryMaterialType,
+      batteryPackingType: LITHIUM_BATTERY_TYPES[type].batteryPackingType,
+      batteryRegulatoryType: 'IATA_SECTION_II'
+    }));
+  }
+
+  if (dangerousGoods !== undefined && dangerousGoods !== null && dangerousGoods !== false) {
+    const details = typeof dangerousGoods === 'string'
+      ? { type: dangerousGoods }
+      : dangerousGoods;
+    const dangerousGoodsType = String(details.type || details.category || details.accessibility || '').toUpperCase();
+    const accessibility = {
+      ADG: 'ACCESSIBLE',
+      ACCESSIBLE: 'ACCESSIBLE',
+      IDG: 'INACCESSIBLE',
+      INACCESSIBLE: 'INACCESSIBLE'
+    }[dangerousGoodsType];
+
+    if (!accessibility) {
+      throw shipmentValidationError(['dangerousGoods.type must be ADG or IDG']);
+    }
+    if (details.cargoAircraftOnly !== undefined && typeof details.cargoAircraftOnly !== 'boolean') {
+      throw shipmentValidationError(['dangerousGoods.cargoAircraftOnly must be true or false']);
+    }
+
+    specialServiceTypes.push('DANGEROUS_GOODS');
+    packageSpecialServices.dangerousGoodsDetail = {
+      accessibility,
+      ...(typeof details.cargoAircraftOnly === 'boolean' ? { cargoAircraftOnly: details.cargoAircraftOnly } : {}),
+      ...(asStringArray(details.options).length ? { options: asStringArray(details.options) } : {})
+    };
+  }
+
+  return specialServiceTypes.length
+    ? { specialServiceTypes, ...packageSpecialServices }
+    : null;
+}
+
+function buildPackages(boxes, fedexOptions) {
+  const packageSpecialServices = buildPackageSpecialServices(fedexOptions);
   return boxes.flatMap((box) => {
     const quantity = Number(box.quantity || 1);
     const item = {
@@ -70,7 +160,11 @@ function buildPackages(boxes) {
         units: 'CM'
       }
     };
-    return Array.from({ length: quantity }, (_, index) => ({ ...item, sequenceNumber: index + 1 }));
+    return Array.from({ length: quantity }, (_, index) => ({
+      ...item,
+      sequenceNumber: index + 1,
+      ...(packageSpecialServices ? { packageSpecialServices } : {})
+    }));
   }).map((item, index) => ({ ...item, sequenceNumber: index + 1 }));
 }
 
@@ -108,7 +202,7 @@ function toFedExShipmentPayload(order) {
   const countryTo = resolveCountryCode(order.destinationCountry);
   const shipper = buildParty(order.pickupAddress, order.user, countryFrom, order.pickupPincode, 'Pickup');
   const recipient = buildParty(order.destinationAddress, {}, countryTo, order.destinationPincode, 'Destination');
-  const requestedPackageLineItems = buildPackages(order.boxes);
+  const requestedPackageLineItems = buildPackages(order.boxes, order.fedexOptions);
   const errors = [];
 
   if (!requestedPackageLineItems.length || requestedPackageLineItems.some((item) => !Number.isFinite(item.weight.value) || item.weight.value <= 0)) {
@@ -184,4 +278,10 @@ async function createFedExShipment(order) {
   return normalizeShipmentResponse(await createShipment(toFedExShipmentPayload(order)));
 }
 
-module.exports = { createFedExShipment, toFedExShipmentPayload, normalizeShipmentResponse };
+module.exports = {
+  createFedExShipment,
+  toFedExShipmentPayload,
+  normalizeShipmentResponse,
+  LITHIUM_BATTERY_TYPES,
+  buildParty
+};

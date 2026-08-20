@@ -114,14 +114,14 @@ async function getRateQuote(payload) {
   return requestFedEx('/rate/v1/rates/quotes', payload, 'FedEx rate request failed');
 }
 
-async function requestFedEx(path, payload, errorMessage = 'FedEx API request failed') {
+async function requestFedEx(path, payload, errorMessage = 'FedEx API request failed', method = 'POST') {
   const token = await getAccessToken();
   let response;
 
   try {
     logFedExPayload(path, payload);
     response = await fetchWithTimeout(`${fedexConfig.baseUrl}${path}`, {
-      method: 'POST',
+      method,
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
@@ -149,6 +149,18 @@ async function createShipment(payload) {
   return requestFedEx('/ship/v1/shipments', payload, 'FedEx shipment creation failed');
 }
 
+async function createPickup(payload) {
+  return requestFedEx('/pickup/v1/pickups', payload, 'FedEx pickup scheduling failed');
+}
+
+async function cancelPickup(payload) {
+  return requestFedEx('/pickup/v1/pickups/cancel', payload, 'FedEx pickup cancellation failed', 'PUT');
+}
+
+async function getPickupAvailability(payload) {
+  return requestFedEx('/pickup/v1/pickups/availabilities', payload, 'FedEx pickup availability check failed');
+}
+
 function validatePostalCode(payload) {
   return requestFedEx('/country/v1/postal/validate', payload, 'FedEx postal code validation failed');
 }
@@ -157,4 +169,12 @@ function getServiceAvailability(payload) {
   return requestFedEx('/availability/v1/transittimes', payload, 'FedEx service availability check failed');
 }
 
-module.exports = { getRateQuote, createShipment, validatePostalCode, getServiceAvailability };
+module.exports = {
+  getRateQuote,
+  createShipment,
+  createPickup,
+  cancelPickup,
+  getPickupAvailability,
+  validatePostalCode,
+  getServiceAvailability
+};

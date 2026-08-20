@@ -94,6 +94,27 @@ ADD COLUMN packing_list_urls JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE orders
 ADD COLUMN carrier JSONB NOT NULL;
 
+-- Apply the same pickup schema in migrations/add-pickups.sql to existing databases.
+CREATE TABLE IF NOT EXISTS pickups (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  order_id UUID REFERENCES orders(id) ON DELETE SET NULL,
+  awb_number TEXT NOT NULL,
+  carrier TEXT NOT NULL,
+  carrier_confirmation_code TEXT NOT NULL,
+  carrier_location_code TEXT,
+  scheduled_date DATE NOT NULL,
+  status TEXT NOT NULL DEFAULT 'SCHEDULED' CHECK (status IN ('SCHEDULED', 'CANCELLED', 'REPLACED')),
+  request_data JSONB NOT NULL,
+  carrier_transaction_id TEXT,
+  cancelled_at TIMESTAMPTZ,
+  replaced_by_pickup_id UUID REFERENCES pickups(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pickups_active_user_carrier_awb
+  ON pickups(user_id, carrier, awb_number) WHERE status = 'SCHEDULED';
+
 create table if not exists tickets (
   id uuid primary key default gen_random_uuid(),
 
@@ -278,6 +299,18 @@ CREATE INDEX IF NOT EXISTS idx_order_address_forms_code
 
 CREATE INDEX IF NOT EXISTS idx_order_address_forms_submitted
   ON order_address_forms(is_submitted, submitted_at DESC);
+
+-- Order-link forms retain the order fields entered by the account user.  The
+-- recipient only supplies pickup and destination details through the public link.
+ALTER TABLE order_address_forms
+  ADD COLUMN IF NOT EXISTS form_type TEXT NOT NULL DEFAULT 'address'
+    CHECK (form_type IN ('address', 'order')),
+  ADD COLUMN IF NOT EXISTS order_data JSONB,
+  ADD COLUMN IF NOT EXISTS order_id UUID REFERENCES orders(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS awb_number TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_order_address_forms_order_id
+  ON order_address_forms(order_id);
 
 -- Create table for saved box details with retrievable prefixed code
 CREATE TABLE IF NOT EXISTS box_details (

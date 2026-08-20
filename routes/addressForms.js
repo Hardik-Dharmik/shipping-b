@@ -16,6 +16,84 @@ const isDuplicateKeyError = (error) => {
   return message.includes('duplicate key') || message.includes('unique');
 };
 
+const parseJsonField = (value, fallback, errorMessage = 'Invalid JSON in request body') => {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    throw new Error(errorMessage);
+  }
+};
+
+const generateAWB = () => `AWB-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+const getAddressValue = (address, keys) => {
+  for (const key of keys) {
+    const value = address?.[key];
+    if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
+  }
+  return null;
+};
+
+const addressLocation = (address, label) => {
+  const country = getAddressValue(address, ['country', 'countryName', 'countryCode', 'country_code']);
+  const pincode = getAddressValue(address, ['pincode', 'pinCode', 'postalCode', 'postal_code', 'zipCode', 'zip']);
+  if (!country || !pincode) {
+    throw new Error(`${label} address must include country and pincode`);
+  }
+  return { country, pincode };
+};
+
+const createOrderFromSubmittedForm = async (form, pickupAddress, destinationAddress) => {
+  const draft = form.order_data;
+  if (!draft || typeof draft !== 'object' || Array.isArray(draft)) {
+    throw new Error('This order link has no saved order details');
+  }
+
+  const pickup = addressLocation(pickupAddress, 'Pickup');
+  const destination = addressLocation(destinationAddress, 'Destination');
+  const boxes = Array.isArray(draft.boxes) ? draft.boxes : [];
+  const actualWeight = Number(draft.actualWeight);
+  if (!Number.isFinite(actualWeight) || actualWeight <= 0 || boxes.length === 0) {
+    throw new Error('The saved order details are incomplete (actualWeight and boxes are required)');
+  }
+
+  const carrier = draft.carrier && typeof draft.carrier === 'object'
+    ? draft.carrier
+    : { name: 'Manual' };
+  const awbNumber = generateAWB();
+  const orderData = {
+    ...draft,
+    orderId: `ORD-${Date.now()}`,
+    user: { id: form.user_id },
+    pickup: { country: pickup.country, pincode: pickup.pincode },
+    destination: { country: destination.country, pincode: destination.pincode },
+    addresses: { pickup: pickupAddress, destination: destinationAddress },
+    products: Array.isArray(draft.products) ? draft.products : [],
+    packages: Array.isArray(draft.packages) ? draft.packages : [],
+    awb_number: awbNumber,
+    status: 'CREATED',
+    createdAt: new Date().toISOString(),
+    createdFromAddressFormId: form.id
+  };
+
+  const { data: order, error } = await supabaseAdmin
+    .from('orders')
+    .insert({
+      user_id: form.user_id,
+      awb_number: awbNumber,
+      order_data: orderData,
+      carrier,
+      status: 'CREATED'
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return order;
+};
+
 
 // Multer error logger for this router
 router.use((err, req, res, next) => {
@@ -97,6 +175,54 @@ router.post('/address-forms', authenticateToken, async (req, res) => {
   }
 });
 
+// Create an order-link from Create Order. The submitted data intentionally
+// excludes the two addresses; those are collected from the recipient later.
+router.post('/address-forms/order-link', authenticateToken, async (req, res) => {
+  try {
+    const orderData = parseJsonField(req.body?.order ?? req.body?.orderData, null);
+    if (!orderData || typeof orderData !== 'object' || Array.isArray(orderData)) {
+      return res.status(400).json({ success: false, error: 'order (or orderData) must be an object' });
+    }
+    if (orderData.pickupAddress || orderData.sourceAddress || orderData.destinationAddress || orderData.pickupCountry || orderData.sourceCountry || orderData.destinationCountry) {
+      return res.status(400).json({
+        success: false,
+        error: 'Order-link drafts must not include pickup or destination details'
+      });
+    }
+    if (!Number.isFinite(Number(orderData.actualWeight)) || Number(orderData.actualWeight) <= 0) {
+      return res.status(400).json({ success: false, error: 'actualWeight must be a positive number' });
+    }
+    if (!Array.isArray(orderData.boxes) || orderData.boxes.length === 0) {
+      return res.status(400).json({ success: false, error: 'boxes must be a non-empty array' });
+    }
+
+    let inserted = null;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const { data, error } = await supabaseAdmin
+        .from('order_address_forms')
+        .insert({ user_id: req.user.id, code: generate6DigitCode(), form_type: 'order', order_data: orderData })
+        .select('*')
+        .single();
+      if (!error) {
+        inserted = data;
+        break;
+      }
+      if (!isDuplicateKeyError(error)) throw error;
+    }
+    if (!inserted) throw new Error('Unable to generate a unique 6 digit code. Please retry.');
+
+    const frontendBase = process.env.FRONTEND_URL || `${req.protocol}://${req.get('host')}`;
+    return res.status(201).json({
+      success: true,
+      message: 'Order address link generated',
+      data: { ...inserted, public_link: `${frontendBase}/address-form/${inserted.code}` }
+    });
+  } catch (error) {
+    console.error('Create order address link error:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Internal server error' });
+  }
+});
+
 // Public: get basic form details by code
 router.get('/address-forms/public/:code', async (req, res) => {
   try {
@@ -110,7 +236,7 @@ router.get('/address-forms/public/:code', async (req, res) => {
 
     const { data, error } = await supabaseAdmin
       .from('order_address_forms')
-      .select('id, code, status, is_submitted, expires_at, created_at')
+      .select('id, code, form_type, status, is_submitted, expires_at, created_at, order_data')
       .eq('code', code)
       .single();
 
@@ -142,9 +268,12 @@ router.get('/address-forms/public/:code', async (req, res) => {
       });
     }
 
+    const responseData = { ...data };
+    // Do not expose a customer's internal order draft to anyone who has the link.
+    delete responseData.order_data;
     return res.json({
       success: true,
-      data
+      data: responseData
     });
   } catch (error) {
     console.error('Get public address form error:', error);
@@ -159,17 +288,7 @@ router.get('/address-forms/public/:code', async (req, res) => {
 router.post('/address-forms/public/:code', async (req, res) => {
   try {
     const code = String(req.params.code || '').trim();
-    const parseJsonField = (value, fallback) => {
-      if (value === undefined || value === null || value === '') return fallback;
-      if (typeof value !== 'string') return value;
-      try {
-        return JSON.parse(value);
-      } catch (err) {
-        throw new Error('Invalid JSON in request body');
-      }
-    };
-
-    const pickupAddress = parseJsonField(req.body?.pickupAddress, null);
+    const pickupAddress = parseJsonField(req.body?.pickupAddress ?? req.body?.sourceAddress, null);
     const destinationAddress = parseJsonField(req.body?.destinationAddress, null);
     const products = parseJsonField(req.body?.products, []);
 
@@ -226,6 +345,40 @@ router.post('/address-forms/public/:code', async (req, res) => {
         success: false,
         error: 'Form has expired'
       });
+    }
+
+    if (form.form_type === 'order') {
+      // Claim the form before creating its order so a repeated click cannot issue
+      // two AWBs. A claimed form is also protected by the existing submitted check.
+      const { data: claimed, error: claimError } = await supabaseAdmin
+        .from('order_address_forms')
+        .update({ is_submitted: true, submitted_at: new Date().toISOString(), pickup_address: pickupAddress, destination_address: destinationAddress })
+        .eq('id', form.id)
+        .eq('is_submitted', false)
+        .select('*')
+        .maybeSingle();
+      if (claimError) throw claimError;
+      if (!claimed) return res.status(409).json({ success: false, error: 'Form has already been submitted' });
+
+      try {
+        const order = await createOrderFromSubmittedForm(claimed, pickupAddress, destinationAddress);
+        const { data: completed, error: completionError } = await supabaseAdmin
+          .from('order_address_forms')
+          .update({ status: 'ordered', order_id: order.id, awb_number: order.awb_number })
+          .eq('id', claimed.id)
+          .select('*')
+          .single();
+        if (completionError) throw completionError;
+        return res.status(201).json({
+          success: true,
+          message: 'Order created successfully',
+          data: { form: completed, order, awb_number: order.awb_number }
+        });
+      } catch (error) {
+        // Let the recipient retry when order creation failed after the claim.
+        await supabaseAdmin.from('order_address_forms').update({ is_submitted: false, submitted_at: null }).eq('id', claimed.id).eq('status', 'open');
+        throw error;
+      }
     }
 
     const { data, error } = await supabaseAdmin

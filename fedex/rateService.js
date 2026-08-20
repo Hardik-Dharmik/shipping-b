@@ -5,11 +5,28 @@ const COUNTRY_CODE = /^[A-Z]{2}$/;
 const CURRENCY_CODE = /^[A-Z]{3}$/;
 
 // Use the comprehensive country list from data/countryCodes.json to
-// resolve full country names to their two-letter ISO codes.
+// resolve full country names to their two-letter ISO codes. Include
+// some common short-name aliases (e.g. UAE, UK, USA) for convenience
+// because users often submit these.
 const countryData = require('../data/countryCodes.json');
 const COUNTRY_NAMES = Object.fromEntries(
   countryData.map((c) => [String(c.name || '').toLowerCase().replace(/[.,()]/g, '').replace(/\s+/g, ' '), c.code])
 );
+
+const ALIASES = Object.fromEntries([
+  ['uae', 'AE'],
+  ['u.a.e.', 'AE'],
+  ['uk', 'GB'],
+  ['united kingdom', 'GB'],
+  ['great britain', 'GB'],
+  ['gb', 'GB'],
+  ['usa', 'US'],
+  ['us', 'US'],
+  ['u.s.a.', 'US'],
+  ['america', 'US'],
+  ['saudi', 'SA'],
+  ['ksa', 'SA']
+]);
 
 function asPositiveNumber(value) {
   const number = Number(value);
@@ -19,6 +36,7 @@ function asPositiveNumber(value) {
 function countryCode(value) {
   const country = String(value || '').trim();
   const normalizedName = country.toLowerCase().replace(/[.,()]/g, '').replace(/\s+/g, ' ');
+  if (ALIASES[normalizedName]) return ALIASES[normalizedName];
   if (COUNTRY_NAMES[normalizedName]) return COUNTRY_NAMES[normalizedName];
   return country.toUpperCase();
 }

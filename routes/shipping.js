@@ -12,8 +12,12 @@ const {
   getRatePerKg
 } = require('../utils/chargeableWeightOffers');
 const { calculateCalculatorRates, calculateValidatedCalculatorRates } = require('../fedex/rateService');
-const { createFedExShipment } = require('../fedex/shipmentService');
+const { createFedExShipment, buildParty } = require('../fedex/shipmentService');
 const { uploadFedExLabel } = require('../fedex/labelStorage');
+const { scheduleFedExPickup, cancelFedExPickup } = require('../fedex/pickupService');
+const { calculateCalculatorRates: calculateUPSRates, calculateValidatedCalculatorRates: calculateValidatedUPSRates } = require('../ups/rateService');
+const { createUPSShipment } = require('../ups/shipmentService');
+const { uploadUPSLabel } = require('../ups/labelStorage');
 
 const generateAWB = () => {
   return `AWB-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -118,7 +122,10 @@ router.post('/quote/validated', authenticateToken, async (req, res) => {
     const validationError = validateInput(input);
     if (validationError) return res.status(400).json({ success: false, error: validationError });
 
-    const fedex = await calculateValidatedCalculatorRates(input);
+    const [fedex, ups] = await Promise.all([
+      calculateValidatedCalculatorRates(input),
+      calculateValidatedUPSRates(input).catch((e) => ({ validation: null, serviceAvailability: null, quotes: [], alerts: [], error: e }))
+    ]);
     const charges = calculateCharges(input);
     const quotes = await generateQuotes(input, charges, fedex);
     const response = buildResponse(input, quotes);
@@ -133,12 +140,12 @@ router.post('/quote/validated', authenticateToken, async (req, res) => {
           addressValidation: {
             fedex: fedex.validation,
             dhl: { status: 'NOT_INTEGRATED' },
-            ups: { status: 'NOT_INTEGRATED' }
+            ups: ups.validation || { status: 'NOT_AVAILABLE' }
           },
           serviceAvailability: {
             fedex: fedex.serviceAvailability,
             dhl: { status: 'NOT_INTEGRATED' },
-            ups: { status: 'NOT_INTEGRATED' }
+            ups: ups.serviceAvailability || { status: 'NOT_AVAILABLE' }
           }
         }
       }
@@ -397,6 +404,40 @@ function calculateCharges(input) {
   };
 }
 
+// Keep carrier-provided charges separate from fees applied by our platform.  This
+// makes it possible for clients to present an invoice-style breakdown without
+// having to infer which surcharge came from FedEx and which one is internal.
+function internalCostBreakdown(charges, currency = 'AED') {
+  return {
+    complianceCharges: {
+      boeCharge: charges.boeCharge,
+      doCharge: charges.doCharge,
+      temporaryExportCharge: charges.tempExportCharge,
+      exportDeclarationCharge: charges.exportDeclarationCharge,
+      insuranceCharge: charges.insuranceCharge,
+      otherCharges: charges.otherCharges
+    },
+    total: charges.additionalCharges,
+    currency
+  };
+}
+
+function carrierCostBreakdown({ carrier, quote, billingWeight, currency = 'AED' }) {
+  const baseShippingCharge = Number(quote.totalBaseCharge || 0);
+  const surchargesTotal = Number(quote.totalSurcharges || 0);
+  const quotedCharge = Number(quote.totalNetCharge || 0);
+
+  return {
+    carrier,
+    chargeableWeight: billingWeight,
+    baseShippingCharge,
+    surchargesTotal,
+    surchargeDetails: quote.surcharges || [],
+    totalQuotedCharge: quotedCharge,
+    currency
+  };
+}
+
 // UAE logic
 function isExportFromUAE(pickup, destination) {
   const isUae = (c) =>
@@ -415,53 +456,99 @@ async function generateQuotes(input, charges, fedexResponse = null) {
 
   const chargeableWeight = getChargeableWeight(input.weight, input.dimensions);
 
-  const nonFedExQuotes = carriers
+  const nonFedExQuotes = await Promise.all(carriers
     .filter((carrier) => carrier.name !== 'FedEx')
-    .map(carrier => {
-    const ratePerKg = getRatePerKg({
-      carrierName: carrier.name,
-      pickupCountry: input.pickupCountry,
-      destinationCountry: input.destinationCountry,
-      actualWeight: input.weight,
-      chargeableWeight,
-      standardRatePerKg: carrier.rate,
-      boxes: input.boxes
-    });
-
-    const baseCost = input.weight * ratePerKg;
-    const totalCost = baseCost + charges.additionalCharges;
-
-    const days = randomBetween(3, 7);
-    const delivery = calculateDeliveryDateTime(days);
-
-    return {
-      carrier: carrier.name,
-      cost: totalCost,
-      currency: 'AED',
-      estimatedDeliveryDays: days,
-      estimatedDelivery: `${days} business days`,
-      ...delivery,
-      costBreakdown: {
-        weight: input.weight,
-        chargeableWeight: Number.isFinite(chargeableWeight)
-          ? Number(chargeableWeight.toFixed(2))
-          : null,
-        ratePerKg,
-        baseShippingCost: baseCost,
-        complianceCharges: {
-          boeCharge: charges.boeCharge,
-          doCharge: charges.doCharge,
-          temporaryExportCharge: charges.tempExportCharge,
-          exportDeclarationCharge: charges.exportDeclarationCharge,
-          insuranceCharge: charges.insuranceCharge,
-          otherCharges: charges.otherCharges
-        },
-        additionalCharges: charges.additionalCharges,
-        totalCost,
-        currency: 'AED'
+    .map(async (carrier) => {
+      if (carrier.name === 'UPS') {
+        try {
+          const upsResponse = await calculateUPSRates(input);
+          // Normalize first UPS quote into our internal shape if present
+          const quote = (upsResponse.quotes || [])[0];
+          if (quote) {
+            const billingWeight = quote.billingWeight?.value || input.weight;
+            const upsTotal = Number(quote.totalNetCharge || 0);
+            const finalTotal = upsTotal + charges.additionalCharges;
+            return {
+              carrier: 'UPS',
+              serviceType: quote.serviceType,
+              serviceName: quote.serviceName,
+              cost: finalTotal,
+              currency: quote.currency || 'AED',
+              estimatedDeliveryDays: quote.estimatedDeliveryDays || null,
+              estimatedDelivery: quote.transitTime || quote.deliveryMessage || null,
+              estimatedDeliveryDate: quote.deliveryTimestamp || null,
+              estimatedDeliveryTime: null,
+              estimatedDeliveryDateTime: null,
+              estimatedDeliveryReadable: quote.deliveryDay || quote.deliveryMessage || null,
+              costBreakdown: {
+                weight: input.weight,
+                chargeableWeight: billingWeight,
+                ratePerKg: billingWeight ? Number((quote.totalBaseCharge / billingWeight).toFixed(2)) : null,
+                baseShippingCost: quote.totalBaseCharge,
+                complianceCharges: {
+                  boeCharge: charges.boeCharge,
+                  doCharge: charges.doCharge,
+                  temporaryExportCharge: charges.tempExportCharge,
+                  exportDeclarationCharge: charges.exportDeclarationCharge,
+                  insuranceCharge: charges.insuranceCharge,
+                  otherCharges: charges.otherCharges
+                },
+                additionalCharges: quote.totalSurcharges + charges.additionalCharges,
+                totalCost: finalTotal,
+                currency: quote.currency || 'AED',
+                upsSurcharges: quote.surcharges
+              },
+              customerMessages: quote.customerMessages || []
+            };
+          }
+        } catch (e) {
+          console.warn('UPS rate fetch failed, falling back to simulated rate', e.message || e);
+        }
       }
-    };
-    });
+
+      // Fallback simulated quote
+      const ratePerKg = getRatePerKg({
+        carrierName: carrier.name,
+        pickupCountry: input.pickupCountry,
+        destinationCountry: input.destinationCountry,
+        actualWeight: input.weight,
+        chargeableWeight,
+        standardRatePerKg: carrier.rate,
+        boxes: input.boxes
+      });
+
+      const baseCost = input.weight * ratePerKg;
+      const totalCost = baseCost + charges.additionalCharges;
+
+      const days = randomBetween(3, 7);
+      const delivery = calculateDeliveryDateTime(days);
+
+      return {
+        carrier: carrier.name,
+        cost: totalCost,
+        currency: 'AED',
+        estimatedDeliveryDays: days,
+        estimatedDelivery: `${days} business days`,
+        ...delivery,
+        costBreakdown: {
+          weight: input.weight,
+          chargeableWeight: Number.isFinite(chargeableWeight) ? Number(chargeableWeight.toFixed(2)) : null,
+          ratePerKg,
+          baseShippingCost: baseCost,
+          complianceCharges: {
+            boeCharge: charges.boeCharge,
+            doCharge: charges.doCharge,
+            temporaryExportCharge: charges.tempExportCharge,
+            exportDeclarationCharge: charges.exportDeclarationCharge,
+            insuranceCharge: charges.insuranceCharge,
+            otherCharges: charges.otherCharges
+          },
+          additionalCharges: charges.additionalCharges,
+          totalCost,
+          currency: 'AED'
+        }
+      };
+    }));
 
   fedexResponse = fedexResponse || await calculateCalculatorRates(input);
   // const fedexQuotes = fedexResponse.quotes.map((quote) => {
@@ -502,10 +589,15 @@ async function generateQuotes(input, charges, fedexResponse = null) {
   // });
 const fedexQuotes = fedexResponse.quotes.map((quote) => {
   const billingWeight = quote.billingWeight?.value || input.weight;
-
-  const fedexTotal = Number(quote.totalNetCharge || 0);
-
-  const finalTotal = fedexTotal + charges.additionalCharges;
+  const currency = quote.currency || 'AED';
+  const fedexCharges = carrierCostBreakdown({
+    carrier: 'FedEx',
+    quote,
+    billingWeight,
+    currency
+  });
+  const internalCharges = internalCostBreakdown(charges, currency);
+  const finalTotal = fedexCharges.totalQuotedCharge + internalCharges.total;
 
   return {
     carrier: "FedEx",
@@ -516,7 +608,7 @@ const fedexQuotes = fedexResponse.quotes.map((quote) => {
     // include compliance charges
     cost: finalTotal,
 
-    currency: quote.currency,
+    currency,
 
     estimatedDeliveryDays: quote.estimatedDeliveryDays,
     estimatedDelivery: quote.transitTime || quote.deliveryMessage || null,
@@ -529,32 +621,21 @@ const fedexQuotes = fedexResponse.quotes.map((quote) => {
     costBreakdown: {
       weight: input.weight,
       chargeableWeight: billingWeight,
-
       ratePerKg:
         billingWeight
           ? Number((quote.totalBaseCharge / billingWeight).toFixed(2))
           : null,
+      // Explicit sections for the FedEx quote and charges added by our platform.
+      fedexCharges,
+      internalCharges,
 
-      baseShippingCost: quote.totalBaseCharge,
-
-      complianceCharges: {
-        boeCharge: charges.boeCharge,
-        doCharge: charges.doCharge,
-        temporaryExportCharge: charges.tempExportCharge,
-        exportDeclarationCharge: charges.exportDeclarationCharge,
-        insuranceCharge: charges.insuranceCharge,
-        otherCharges: charges.otherCharges
-      },
-
-      // FedEx API surcharges + your compliance charges
-      additionalCharges:
-        quote.totalSurcharges + charges.additionalCharges,
-
+      // Legacy flat fields retained for existing calculator clients.
+      baseShippingCost: fedexCharges.baseShippingCharge,
+      complianceCharges: internalCharges.complianceCharges,
+      additionalCharges: fedexCharges.surchargesTotal + internalCharges.total,
       totalCost: finalTotal,
-
-      currency: quote.currency,
-
-      fedexSurcharges: quote.surcharges
+      currency,
+      fedexSurcharges: fedexCharges.surchargeDetails
     },
 
     customerMessages: quote.customerMessages
@@ -655,6 +736,8 @@ const parseOrderData = (req) => {
       const parsedProducts = parseJsonField(orderSource.products, []);
       const parsedPackages = parseJsonField(orderSource.packages, []);
       const parsedOrderMeta = parseJsonField(orderSource.orderMeta, null);
+      const parsedFedexOptions = parseJsonField(orderSource.fedexOptions, null);
+      const parsedPickupRequest = parseJsonField(orderSource.pickupRequest ?? orderSource.schedulePickup, null);
       const otherCharges = parseOptionalNumber(
         orderSource.otherCharges ?? orderSource.otherCharge ?? parsedCompliance?.otherCharges
       );
@@ -678,6 +761,8 @@ const parseOrderData = (req) => {
       products: Array.isArray(parsedProducts) ? parsedProducts : [],
       packages: Array.isArray(parsedPackages) ? parsedPackages : [],
       orderMeta: parsedOrderMeta,
+      fedexOptions: parsedFedexOptions,
+      pickupRequest: parsedPickupRequest,
       rawOrderData: {
         ...orderSource,
         boxes: parsedBoxes,
@@ -687,7 +772,9 @@ const parseOrderData = (req) => {
         destinationAddress: parsedDestinationAddress,
         products: Array.isArray(parsedProducts) ? parsedProducts : [],
         packages: Array.isArray(parsedPackages) ? parsedPackages : [],
-        orderMeta: parsedOrderMeta
+        orderMeta: parsedOrderMeta,
+        fedexOptions: parsedFedexOptions,
+        pickupRequest: parsedPickupRequest
       }
       };
 };
@@ -802,6 +889,8 @@ router.post(
       products,
       packages,
       orderMeta,
+      fedexOptions,
+      pickupRequest,
       rawOrderData
     } = parseOrderData(req);
 
@@ -1027,6 +1116,8 @@ router.post(
         currency: parsedCarrier.currency,
         serviceType: parsedCarrier.serviceType,
         packagingType: parsedCarrier.packagingType,
+        // Allow it at the top-level order field or inside the selected carrier.
+        fedexOptions: fedexOptions || parsedCarrier.fedexOptions,
         user: req.user
       });
 
@@ -1052,6 +1143,43 @@ router.post(
         labelFormat: fedexShipment.labelFormat,
         labelUrl: fedexLabelUrl,
         alerts: fedexShipment.alerts
+      };
+    }
+
+    if (carrierName === 'ups') {
+      const upsShipment = await createUPSShipment({
+        pickupCountry,
+        pickupPincode,
+        destinationCountry,
+        destinationPincode,
+        pickupAddress,
+        destinationAddress,
+        boxes,
+        products,
+        shipmentValue: invoiceValue,
+        currency: parsedCarrier.currency,
+        serviceType: parsedCarrier.serviceType,
+        packagingType: parsedCarrier.packagingType,
+        user: req.user
+      });
+
+      if (!upsShipment.trackingNumber) {
+        const error = new Error('UPS did not return a tracking number for this shipment');
+        error.statusCode = 502;
+        error.code = 'UPS_INVALID_SHIPMENT_RESPONSE';
+        throw error;
+      }
+
+      awbNumber = upsShipment.trackingNumber;
+      const upsLabelUrl = await uploadUPSLabel(supabaseAdmin, upsShipment.label, upsShipment.trackingNumber, upsShipment.labelFormat);
+      parsedCarrier.trackingNumber = upsShipment.trackingNumber;
+      parsedCarrier.upsShipment = {
+        transactionId: upsShipment.transactionId,
+        serviceType: upsShipment.serviceType,
+        shipDate: upsShipment.shipDate,
+        labelFormat: upsShipment.labelFormat,
+        labelUrl: upsLabelUrl,
+        alerts: upsShipment.alerts
       };
     }
 
@@ -1082,6 +1210,7 @@ router.post(
       products,
       packages,
       orderMeta,
+      fedexOptions: carrierName === 'fedex' ? (fedexOptions || parsedCarrier.fedexOptions || null) : null,
       submittedDetails: rawOrderData,
       status: 'CREATED',
       createdAt: new Date().toISOString()
@@ -1092,6 +1221,44 @@ router.post(
       orderPayload.fedex_shipment = {
         ...parsedCarrier.fedexShipment,
         trackingNumber: fedexShipment.trackingNumber
+      };
+    }
+
+    // Pickup scheduling is optional during order creation and is only available
+    // for FedEx orders. A successful shipment is supplied as the pickup's package.
+    let scheduledPickup = null;
+    if (pickupRequest) {
+      if (carrierName !== 'fedex') {
+        return res.status(400).json({ success: false, error: 'pickupRequest is only supported for FedEx orders' });
+      }
+      const alternatePickupAddress = String(pickupRequest.alternatePickupAddress || '').trim();
+      const pickupAddressForSchedule = pickupRequest.pickupAddress || (
+        alternatePickupAddress
+          ? {
+            ...(pickupAddress || {}),
+            streetLine1: alternatePickupAddress,
+            ...(pickupAddress?.address && typeof pickupAddress.address === 'object'
+              ? { address: { ...pickupAddress.address, streetLine1: alternatePickupAddress } }
+              : {})
+          }
+          : pickupAddress
+      );
+      scheduledPickup = await scheduleFedExPickup({
+        ...pickupRequest,
+        // A pickup can be collected from the shipment's pickup address or an
+        // alternate address supplied specifically for this pickup request.
+        pickupCountry: pickupRequest.pickupCountry || pickupCountry,
+        pickupPincode: pickupRequest.pickupPincode || pickupPincode,
+        pickupAddress: pickupAddressForSchedule,
+        packageCount: pickupRequest.packageCount || processedBoxes.reduce((total, box) => total + Number(box.quantity || 0), 0),
+        totalWeight: pickupRequest.totalWeight || totalChargeableWeight,
+        trackingNumbers: pickupRequest.trackingNumbers || [awbNumber]
+      }, req.user);
+      orderPayload.fedex_pickup = {
+        confirmationCode: scheduledPickup.confirmationCode,
+        location: scheduledPickup.location,
+        scheduledDate: scheduledPickup.scheduledDate,
+        status: 'SCHEDULED'
       };
     }
 
@@ -1139,6 +1306,21 @@ router.post(
       .single();
 
     if (error) throw error;
+
+    if (scheduledPickup) {
+      const { error: pickupError } = await supabaseAdmin.from('pickups').insert({
+        user_id: userId,
+        order_id: data.id,
+        awb_number: awbNumber,
+        carrier: 'FedEx',
+        carrier_confirmation_code: scheduledPickup.confirmationCode,
+        carrier_location_code: scheduledPickup.location,
+        scheduled_date: scheduledPickup.scheduledDate,
+        request_data: scheduledPickup.request,
+        carrier_transaction_id: scheduledPickup.transactionId
+      });
+      if (pickupError) throw pickupError;
+    }
 
     if (addressForm) {
       const { error: addressFormUpdateError } = await supabaseAdmin
@@ -1191,6 +1373,269 @@ router.use((err, req, res, next) => {
     });
   }
   next();
+});
+
+// The application owns the pickup list. Carrier-specific adapters perform
+// external scheduling and cancellation; FedEx is the currently enabled adapter.
+router.get('/pickups', authenticateToken, async (req, res) => {
+  const carrier = String(req.query.carrier || '').trim();
+  const status = String(req.query.status || '').trim().toUpperCase();
+  const page = Number.parseInt(req.query.page || '1', 10);
+  const limit = Math.min(Number.parseInt(req.query.limit || '20', 10), 100);
+  if (!Number.isInteger(page) || page < 1 || !Number.isInteger(limit) || limit < 1) {
+    return res.status(400).json({ success: false, error: 'page and limit must be positive integers' });
+  }
+  if (status && !['SCHEDULED', 'CANCELLED', 'REPLACED'].includes(status)) {
+    return res.status(400).json({ success: false, error: 'status must be SCHEDULED, CANCELLED, or REPLACED' });
+  }
+  let query = supabaseAdmin
+    .from('pickups')
+    .select('id, order_id, awb_number, carrier, carrier_confirmation_code, carrier_location_code, scheduled_date, status, request_data, created_at, updated_at, cancelled_at', { count: 'exact' })
+    .eq('user_id', req.user.id);
+  if (status) query = query.eq('status', status);
+  if (carrier) query = query.ilike('carrier', carrier);
+  const { data, count, error } = await query
+    .order('scheduled_date', { ascending: false })
+    .range((page - 1) * limit, page * limit - 1);
+  if (error) return res.status(500).json({ success: false, error: error.message });
+  return res.json({
+    success: true,
+    data,
+    pagination: { page, limit, carrier, total: count || 0, totalPages: count ? Math.ceil(count / limit) : 0 }
+  });
+});
+
+// Used by the standalone-pickup form after an AWB is entered. The form can
+// reuse the order's FedEx-required contact/city/postal details while allowing
+// the user to override only the collection street address.
+router.get('/pickups/order-details/:awbNumber', authenticateToken, async (req, res) => {
+  const awbNumber = String(req.params.awbNumber || '').trim();
+  const order = await findUserOrderByAwb(awbNumber, req.user.id);
+  if (!order) return res.status(404).json({ success: false, error: 'Order not found for this AWB' });
+  const orderData = order.order_data || {};
+  const pickupAddress = orderData.addresses?.pickup || orderData.pickupAddress || null;
+  const pickupCountry = orderData.pickup?.country || orderData.pickupCountry || null;
+  const pickupPincode = orderData.pickup?.pincode || orderData.pickupPincode || null;
+  let requiredPickupFields = null;
+  let missingRequiredPickupFields = [];
+  try {
+    const fedexPickupLocation = buildParty(pickupAddress, req.user, pickupCountry, pickupPincode, 'Pickup');
+    requiredPickupFields = {
+      streetLine1: fedexPickupLocation.address.streetLines[0] || null,
+      city: fedexPickupLocation.address.city || null,
+      phoneNumber: fedexPickupLocation.contact.phoneNumber || null
+    };
+  } catch (error) {
+    missingRequiredPickupFields = error.details || ['Pickup address details are incomplete'];
+  }
+  const details = {
+    orderId: order.id,
+    awbNumber: order.awb_number,
+    carrier: orderData.carrier?.carrier || orderData.carrier?.name || order.carrier?.carrier || order.carrier?.name || null,
+    pickupAddress,
+    pickupCountry,
+    pickupPincode,
+    requiredPickupFields,
+    missingRequiredPickupFields
+  };
+  const responsePayload = {
+    success: true,
+    data: details
+  };
+  console.info('Complete standalone pickup response fetched from AWB', {
+    userId: req.user.id,
+    awbNumber,
+    response: responsePayload
+  });
+  return res.json(responsePayload);
+});
+
+router.post('/pickups', authenticateToken, async (req, res) => {
+  try {
+    const awbNumber = String(req.body.awbNumber || req.body.awb_number || '').trim();
+    const carrier = String(req.body.carrier || '').trim();
+    console.info('Standalone pickup request received', {
+      userId: req.user.id,
+      carrier: carrier || null,
+      awbNumber: awbNumber || null,
+      payload: req.body
+    });
+    if (!awbNumber) {
+      console.warn('Standalone pickup rejected: missing AWB number', { userId: req.user.id, carrier: carrier || null });
+      return res.status(400).json({ success: false, error: 'awbNumber is required to schedule a standalone pickup' });
+    }
+    if (carrier.toLowerCase() !== 'fedex') {
+      console.warn('Standalone pickup rejected: carrier unavailable', { userId: req.user.id, carrier, awbNumber });
+      return res.status(400).json({ success: false, error: 'Pickup scheduling is not available for this carrier yet' });
+    }
+    const { data: existingPickup, error: existingPickupError } = await supabaseAdmin.from('pickups')
+      .select('id, carrier_confirmation_code').eq('user_id', req.user.id).eq('carrier', 'FedEx').eq('awb_number', awbNumber).eq('status', 'SCHEDULED').maybeSingle();
+    if (existingPickupError) throw existingPickupError;
+    if (existingPickup) {
+      console.warn('Standalone pickup rejected: active pickup already exists', {
+        userId: req.user.id,
+        carrier: 'FedEx',
+        awbNumber,
+        pickupId: existingPickup.id
+      });
+      return res.status(409).json({ success: false, error: `A pickup is already scheduled for AWB ${awbNumber}`, pickupId: existingPickup.id });
+    }
+    const order = await findUserOrderByAwb(awbNumber, req.user.id);
+    if (!order) return res.status(404).json({ success: false, error: 'Order not found for this AWB' });
+    if (req.body.orderId && req.body.orderId !== order.id) {
+      return res.status(400).json({ success: false, error: 'orderId does not match the supplied AWB' });
+    }
+    const orderData = order.order_data || {};
+    const orderPickupAddress = orderData.addresses?.pickup || orderData.pickupAddress;
+    const alternatePickupAddress = String(req.body.alternatePickupAddress || '').trim();
+    const pickupAddress = req.body.pickupAddress || (
+      alternatePickupAddress
+        ? {
+          ...(orderPickupAddress || {}),
+          streetLine1: alternatePickupAddress,
+          ...(orderPickupAddress?.address && typeof orderPickupAddress.address === 'object'
+            ? { address: { ...orderPickupAddress.address, streetLine1: alternatePickupAddress } }
+            : {})
+        }
+        : orderPickupAddress
+    );
+    const pickupCountry = req.body.pickupCountry || orderData.pickup?.country || orderData.pickupCountry;
+    const pickupPincode = req.body.pickupPincode || orderData.pickup?.pincode || orderData.pickupPincode;
+    console.info('Standalone pickup details resolved from AWB', {
+      userId: req.user.id,
+      awbNumber,
+      orderId: order.id,
+      pickupAddress,
+      pickupCountry,
+      pickupPincode
+    });
+    console.info('Scheduling standalone pickup with carrier', { userId: req.user.id, carrier: 'FedEx', awbNumber });
+    const pickup = await scheduleFedExPickup({
+      ...req.body,
+      pickupAddress,
+      pickupCountry,
+      pickupPincode,
+      trackingNumbers: [awbNumber]
+    }, req.user);
+    const { data, error } = await supabaseAdmin.from('pickups').insert({
+      user_id: req.user.id,
+      order_id: order.id,
+      awb_number: awbNumber,
+      carrier: 'FedEx',
+      carrier_confirmation_code: pickup.confirmationCode,
+      carrier_location_code: pickup.location,
+      scheduled_date: pickup.scheduledDate,
+      request_data: pickup.request,
+      carrier_transaction_id: pickup.transactionId
+    }).select().single();
+    if (error) throw error;
+    console.info('Standalone pickup scheduled', {
+      userId: req.user.id,
+      carrier: 'FedEx',
+      awbNumber,
+      pickupId: data.id,
+      confirmationCode: pickup.confirmationCode
+    });
+    return res.status(201).json({ success: true, message: 'FedEx pickup scheduled', data });
+  } catch (error) {
+    console.error('Standalone pickup scheduling failed', {
+      userId: req.user?.id,
+      carrier: req.body?.carrier || null,
+      awbNumber: req.body?.awbNumber || req.body?.awb_number || null,
+      code: error.code,
+      message: error.message,
+      details: error.details
+    });
+    return res.status(error.statusCode || 500).json({ success: false, error: error.message, code: error.code, details: error.details });
+  }
+});
+
+async function findUserPickup(id, userId) {
+  const { data, error } = await supabaseAdmin
+    .from('pickups')
+    .select('*')
+    .eq('id', id)
+    .eq('user_id', userId)
+    .single();
+  if (error || !data) return null;
+  return data;
+}
+
+async function findUserOrderByAwb(awbNumber, userId) {
+  const { data, error } = await supabaseAdmin
+    .from('orders')
+    .select('id, awb_number, order_data, carrier')
+    .eq('awb_number', awbNumber)
+    .eq('user_id', userId)
+    .single();
+  if (error || !data) return null;
+  return data;
+}
+
+router.delete('/pickups/:pickupId', authenticateToken, async (req, res) => {
+  try {
+    const pickup = await findUserPickup(req.params.pickupId, req.user.id);
+    if (!pickup) return res.status(404).json({ success: false, error: 'Pickup not found' });
+    if (pickup.carrier !== 'FedEx') return res.status(400).json({ success: false, error: 'Pickup cancellation is not available for this carrier yet' });
+    if (pickup.status !== 'SCHEDULED') return res.status(409).json({ success: false, error: `Pickup is already ${pickup.status.toLowerCase()}` });
+    await cancelFedExPickup(pickup);
+    const { data, error } = await supabaseAdmin.from('pickups')
+      .update({ status: 'CANCELLED', cancelled_at: new Date().toISOString() })
+      .eq('id', pickup.id).eq('user_id', req.user.id).select().single();
+    if (error) throw error;
+    return res.json({ success: true, message: 'FedEx pickup cancelled', data });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, error: error.message, code: error.code, details: error.details });
+  }
+});
+
+// FedEx Pickup Request API has no update operation. Editing cancels the active
+// request and creates a replacement, preserving a link to the old record.
+router.put('/pickups/:pickupId', authenticateToken, async (req, res) => {
+  try {
+    const oldPickup = await findUserPickup(req.params.pickupId, req.user.id);
+    if (!oldPickup) return res.status(404).json({ success: false, error: 'Pickup not found' });
+    if (oldPickup.carrier !== 'FedEx') return res.status(400).json({ success: false, error: 'Pickup editing is not available for this carrier yet' });
+    if (oldPickup.status !== 'SCHEDULED') return res.status(409).json({ success: false, error: `Pickup is already ${oldPickup.status.toLowerCase()}` });
+
+    await cancelFedExPickup(oldPickup);
+    const { error: cancelledUpdateError } = await supabaseAdmin.from('pickups')
+      .update({ status: 'CANCELLED', cancelled_at: new Date().toISOString() })
+      .eq('id', oldPickup.id).eq('user_id', req.user.id);
+    if (cancelledUpdateError) throw cancelledUpdateError;
+    const request = oldPickup.request_data || {};
+    const oldOrigin = request.originDetail || {};
+    const replacement = await scheduleFedExPickup({
+      ...request,
+      ...req.body,
+      pickupAddress: req.body.pickupAddress || oldOrigin.pickupLocation,
+      pickupCountry: req.body.pickupCountry || request.countryCode,
+      pickupPincode: req.body.pickupPincode || oldOrigin.pickupLocation?.address?.postalCode,
+      pickupDate: req.body.pickupDate || oldOrigin.pickupDate || oldPickup.scheduled_date,
+      readyTime: req.body.readyTime || String(oldOrigin.readyDateTimestamp || '').slice(11, 16),
+      customerCloseTime: req.body.customerCloseTime || oldOrigin.customerCloseTime
+    }, req.user);
+
+    const { data: newPickup, error: createError } = await supabaseAdmin.from('pickups').insert({
+      user_id: req.user.id,
+      order_id: oldPickup.order_id,
+      awb_number: oldPickup.awb_number,
+      carrier: 'FedEx',
+      carrier_confirmation_code: replacement.confirmationCode,
+      carrier_location_code: replacement.location,
+      scheduled_date: replacement.scheduledDate,
+      request_data: replacement.request,
+      carrier_transaction_id: replacement.transactionId
+    }).select().single();
+    if (createError) throw createError;
+    const { error: updateError } = await supabaseAdmin.from('pickups')
+      .update({ status: 'REPLACED', replaced_by_pickup_id: newPickup.id })
+      .eq('id', oldPickup.id).eq('user_id', req.user.id);
+    if (updateError) throw updateError;
+    return res.json({ success: true, message: 'FedEx pickup replaced', data: newPickup, replacedPickupId: oldPickup.id });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ success: false, error: error.message, code: error.code, details: error.details });
+  }
 });
 
 router.get('/orders', authenticateToken, async (req, res) => {
