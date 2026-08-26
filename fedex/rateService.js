@@ -324,6 +324,7 @@ function toCalculatorRateRequest(input) {
     shipmentValue: input.shipmentValue,
     currency: input.currency || 'AED',
     commodityDescription: input.commodityDescription || input.products?.[0]?.description || input.products?.[0]?.name,
+    serviceType: input.serviceType || input.carrier?.serviceType,
     returnTransitTimes: true
   };
 }

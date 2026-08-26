@@ -117,7 +117,8 @@ function toCalculatorRateRequest(input) {
   return {
     shipper: { countryCode: input.pickupCountry, postalCode: input.pickupPincode },
     recipient: { countryCode: input.destinationCountry, postalCode: input.destinationPincode },
-    packages: packages.length ? packages : [{ weight: input.weight }]
+    packages: packages.length ? packages : [{ weight: input.weight }],
+    serviceType: input.serviceType || input.carrier?.serviceType
   };
 }
 
