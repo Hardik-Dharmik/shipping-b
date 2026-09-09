@@ -173,7 +173,7 @@ const createCountrySuggestionHandler = async (req, res) => {
 };
 
 router.get('/city-suggestions', authenticateToken, createSuggestionHandler('city'));
-router.get('/pincode-suggestions', authenticateToken, createSuggestionHandler('postcode'));
-router.get('/country-suggestions', authenticateToken, createCountrySuggestionHandler);
+router.get('/pincode-suggestions', createSuggestionHandler('postcode'));
+router.get('/country-suggestions', createCountrySuggestionHandler);
 
 module.exports = router;

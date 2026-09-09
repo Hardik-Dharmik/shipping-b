@@ -44,6 +44,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/address", addressFormRoutes);
 app.use("/api/box-details", boxDetailsRoutes);
 app.use("/api/contact-details", contactDetailsRoutes);
+app.use("/api/customers", require("./routes/customers"));
 app.use("/api/locations", locationsRoutes);
 app.use("/api/kyc", kycRoutes);
 app.use("/api/ai", aiRoutes);

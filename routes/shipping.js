@@ -1,3 +1,5 @@
+const { normalizeLinkedOrderForDisplay, getOrderDetails } = require('../utils/orderDetails');
+const { ORDER_CUSTOMER_SELECT, isCustomerId, resolveCustomerId } = require('../utils/customers');
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
@@ -83,54 +85,10 @@ const uploadOrderDocuments = async (files, awbNumber, folder) => {
 // Address-link orders created before their payload was aligned with /order have
 // draft-level values only. Normalize those responses so the order list can show
 // the same fields without requiring a manual database repair.
-const normalizeLinkedOrderForDisplay = (order) => {
-  const orderData = order?.order_data || {};
-  if (!orderData.createdFromAddressFormId) return order;
-
-  const boxes = Array.isArray(orderData.boxes) ? orderData.boxes : [];
-  const declaredWeight = Number(orderData.weight?.declared ?? orderData.actualWeight);
-  const chargeableWeight = boxes.reduce((total, box) => {
-    const itemWeight = Number(box.chargeableWeight ?? box.actualWeight ?? box.weight ?? 0);
-    return total + (itemWeight * Number(box.quantity || 1));
-  }, 0);
-  const quote = orderData.selectedServiceQuote || {};
-  const carrier = { ...(orderData.carrier || order.carrier || {}) };
-  const quoteCost = Number(quote.totalNetCharge || quote.totalCharge || 0);
-  if (quoteCost > 0 && !Number.isFinite(Number(carrier.cost))) {
-    carrier.cost = quoteCost;
-    carrier.currency = carrier.currency || quote.currency || 'AED';
-    carrier.costBreakdown = {
-      weight: declaredWeight,
-      baseShippingCost: quoteCost,
-      additionalCharges: 0,
-      totalCost: quoteCost,
-      currency: carrier.currency
-    };
-  }
-  const shipmentValue = Number(orderData.shipmentValue);
-  return {
-    ...order,
-    carrier,
-    order_data: {
-      ...orderData,
-      carrier,
-      weight: orderData.weight || {
-        declared: Number.isFinite(declaredWeight) ? declaredWeight : 0,
-        chargeable: Number(chargeableWeight.toFixed(2)),
-        unit: 'kg'
-      },
-      shipmentValue: orderData.shipmentValue && typeof orderData.shipmentValue === 'object'
-        ? orderData.shipmentValue
-        : (Number.isFinite(shipmentValue) && shipmentValue > 0
-          ? { value: shipmentValue, currency: orderData.currency || carrier.currency || 'AED' }
-          : null)
-    }
-  };
-};
 
 
 // Calculate shipping quote endpoint
-router.post('/quote', authenticateToken, async (req, res) => {
+router.post('/quote', async (req, res) => {
   try {
     const input = normalizeInput(req.body);
 
@@ -164,7 +122,7 @@ router.post('/quote', authenticateToken, async (req, res) => {
 });
 
 // Validated quote workflow: address checks -> service availability -> live rates.
-router.post('/quote/validated', authenticateToken, async (req, res) => {
+router.post('/quote/validated', async (req, res) => {
   try {
     const input = normalizeInput(req.body);
     const validationError = validateInput(input);
@@ -801,6 +759,7 @@ const parseOrderData = (req) => {
       otherCharges: otherCharges === null ? 0 : otherCharges,
       insurance,
       addressFormId: orderSource.addressFormId,
+      customerId: orderSource.customerId,
       boxes: parsedBoxes,
       parsedCarrier,
       parsedCompliance,
@@ -929,6 +888,7 @@ router.post(
       otherCharges,
       insurance,
       addressFormId,
+      customerId: requestedCustomerId,
       boxes,
       parsedCarrier,
       parsedCompliance,
@@ -990,7 +950,7 @@ router.post(
     if (addressFormId) {
       const { data: existingAddressForm, error: addressFormError } = await supabaseAdmin
         .from('order_address_forms')
-        .select('id, user_id, status')
+        .select('id, user_id, status, customer_id')
         .eq('id', addressFormId)
         .eq('user_id', userId)
         .single();
@@ -1011,6 +971,8 @@ router.post(
 
       addressForm = existingAddressForm;
     }
+
+    const customerId = await resolveCustomerId(requestedCustomerId, addressForm?.customer_id);
 
     let totalChargeableWeight = 0;
 
@@ -1342,6 +1304,7 @@ router.post(
       .from('orders')
       .insert({
         user_id: userId,
+        customer_id: customerId,
         awb_number: awbNumber,
         awb_pdf_url: pdfUrl,
         invoice_urls: invoiceUrls,
@@ -1350,7 +1313,7 @@ router.post(
         carrier: parsedCarrier,
         status: 'CREATED'
       })
-      .select()
+      .select(ORDER_CUSTOMER_SELECT)
       .single();
 
     if (error) throw error;
@@ -1374,7 +1337,7 @@ router.post(
       const { error: addressFormUpdateError } = await supabaseAdmin
         .from('order_address_forms')
         .update({
-          status: 'ordered'
+          status: 'ordered', order_id: data.id, awb_number: awbNumber
         })
         .eq('id', addressForm.id)
         .eq('user_id', userId);
@@ -1688,6 +1651,10 @@ router.put('/pickups/:pickupId', authenticateToken, async (req, res) => {
 
 router.get('/orders', authenticateToken, async (req, res) => {
   const userId = req.user.id;
+  const customerId = req.query.customerId;
+  if (customerId !== undefined && !isCustomerId(customerId)) {
+    return res.status(400).json({ success: false, error: 'customerId must be a 6 digit string' });
+  }
   const search = String(req.query.search || '').trim();
   const status = String(req.query.status || '').trim();
   const carrier = String(req.query.carrier || '').trim();
@@ -1745,8 +1712,10 @@ router.get('/orders', authenticateToken, async (req, res) => {
 
   let query = supabaseAdmin
     .from('orders')
-    .select('*', { count: 'exact' })
+    .select(ORDER_CUSTOMER_SELECT, { count: 'exact' })
     .eq('user_id', userId);
+
+  if (customerId) query = query.eq('customer_id', customerId);
 
   if (search) {
     const escapedSearch = search.replace(/[%_,]/g, '\\$&');
@@ -1792,6 +1761,7 @@ router.get('/orders', authenticateToken, async (req, res) => {
       limit: safeLimit,
       search,
       filters: {
+        customerId: customerId || null,
         status,
         carrier,
         fromDate,
@@ -1812,6 +1782,10 @@ router.get('/orders', authenticateToken, async (req, res) => {
 // Get orders for a specific user (admin or owner)
 router.get('/orders/user/:userId', authenticateToken, async (req, res) => {
   const { userId } = req.params;
+  const customerId = req.query.customerId;
+  if (customerId !== undefined && !isCustomerId(customerId)) {
+    return res.status(400).json({ success: false, error: 'customerId must be a 6 digit string' });
+  }
   const search = String(req.query.search || '').trim();
   const status = String(req.query.status || '').trim();
   const carrier = String(req.query.carrier || '').trim();
@@ -1877,8 +1851,10 @@ router.get('/orders/user/:userId', authenticateToken, async (req, res) => {
 
   let query = supabaseAdmin
     .from('orders')
-    .select('*', { count: 'exact' })
+    .select(ORDER_CUSTOMER_SELECT, { count: 'exact' })
     .eq('user_id', userId);
+
+  if (customerId) query = query.eq('customer_id', customerId);
 
   if (search) {
     const escapedSearch = search.replace(/[%_,]/g, '\\$&');
@@ -1924,6 +1900,7 @@ router.get('/orders/user/:userId', authenticateToken, async (req, res) => {
       limit: safeLimit,
       search,
       filters: {
+        customerId: customerId || null,
         status,
         carrier,
         fromDate,
@@ -1946,47 +1923,12 @@ router.get('/orders/user/:userId', authenticateToken, async (req, res) => {
 router.get('/orders/:orderId', authenticateToken, async (req, res) => {
   try {
     const { orderId } = req.params;
-    let orderQuery = supabaseAdmin.from('orders').select('*').eq('id', orderId);
+    let orderQuery = supabaseAdmin.from('orders').select(ORDER_CUSTOMER_SELECT).eq('id', orderId);
     if (req.user.role !== 'admin') orderQuery = orderQuery.eq('user_id', req.user.id);
     const { data: order, error: orderError } = await orderQuery.single();
     if (orderError || !order) return res.status(404).json({ success: false, error: 'Order not found' });
 
-    const { data: pickup, error: pickupError } = await supabaseAdmin
-      .from('pickups')
-      .select('id, order_id, awb_number, carrier, carrier_confirmation_code, carrier_location_code, scheduled_date, status, request_data, created_at, updated_at, cancelled_at')
-      .eq('order_id', order.id)
-      .eq('user_id', order.user_id)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (pickupError) throw pickupError;
-
-    const displayOrder = normalizeLinkedOrderForDisplay(order);
-    const displayCarrier = displayOrder.order_data?.carrier || displayOrder.carrier || {};
-    const costBreakdown = displayCarrier.costBreakdown || {
-      weight: displayOrder.order_data?.weight?.declared || 0,
-      baseShippingCost: Number(displayCarrier.cost || 0),
-      additionalCharges: 0,
-      totalCost: Number(displayCarrier.cost || 0),
-      currency: displayCarrier.currency || 'AED'
-    };
-
-    return res.json({
-      success: true,
-      data: {
-        order: displayOrder,
-        pickup: pickup || null,
-        costBreakdown,
-        carrierCostBreakdown: {
-          carrier: displayCarrier.carrier || displayCarrier.name || null,
-          serviceType: displayCarrier.serviceType || null,
-          serviceName: displayCarrier.serviceName || null,
-          cost: Number(displayCarrier.cost || costBreakdown.totalCost || 0),
-          currency: displayCarrier.currency || costBreakdown.currency || 'AED',
-          breakdown: costBreakdown
-        }
-      }
-    });
+    return res.json({ success: true, data: await getOrderDetails(order) });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || 'Unable to load order details' });
   }

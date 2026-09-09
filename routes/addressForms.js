@@ -1,3 +1,6 @@
+const { resolveCustomerId } = require('../utils/customers');
+const { ORDER_CUSTOMER_SELECT } = require('../utils/customers');
+const { getOrderDetails } = require('../utils/orderDetails');
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
@@ -9,6 +12,8 @@ const { calculateValidatedCalculatorRates: calculateUPSRates } = require('../ups
 const { createFedExShipment } = require('../fedex/shipmentService');
 const { createUPSShipment } = require('../ups/shipmentService');
 const { scheduleFedExPickup } = require('../fedex/pickupService');
+const { uploadFedExLabel } = require('../fedex/labelStorage');
+const { uploadUPSLabel } = require('../ups/labelStorage');
 
 
 
@@ -121,6 +126,7 @@ const addressLocation = (address, label) => {
 };
 
 const createOrderFromSubmittedForm = async (form, pickupAddress, destinationAddress) => {
+  const customerId = await resolveCustomerId(form.customer_id);
   const draft = form.order_data;
   if (!draft || typeof draft !== 'object' || Array.isArray(draft)) {
     throw new Error('This order link has no saved order details');
@@ -165,6 +171,9 @@ const createOrderFromSubmittedForm = async (form, pickupAddress, destinationAddr
     : await createUPSShipment(shipmentRequest);
   const awbNumber = shipment.trackingNumber;
   if (!awbNumber) throw new Error(`${carrierName === 'fedex' ? 'FedEx' : 'UPS'} did not return an AWB number`);
+  const labelUrl = carrierName === 'fedex'
+    ? await uploadFedExLabel(supabaseAdmin, shipment.label, awbNumber, shipment.labelFormat)
+    : await uploadUPSLabel(supabaseAdmin, shipment.label, awbNumber, shipment.labelFormat);
 
   // Keep the payload shape identical to /api/shipping/order so existing order
   // list and detail screens can render costs, declared weight and shipment value.
@@ -206,7 +215,9 @@ const createOrderFromSubmittedForm = async (form, pickupAddress, destinationAddr
     carrierShipment: {
       transactionId: shipment.transactionId,
       serviceType: shipment.serviceType || carrier.serviceType,
-      shipDate: shipment.shipDate || null
+      shipDate: shipment.shipDate || null,
+      labelFormat: shipment.labelFormat || null,
+      labelUrl
     }
   };
   const pickupRequest = draft.pickupRequest || draft.schedulePickup || null;
@@ -238,9 +249,14 @@ const createOrderFromSubmittedForm = async (form, pickupAddress, destinationAddr
     }, user);
   }
   const shipmentValue = Number(draft.shipmentValue);
+  const orderId = `ORD-${Date.now()}`;
+  const referenceNumber = String(
+    draft.referenceNumber || draft.reference_number || draft.orderMeta?.referenceNumber || orderId
+  );
   const orderData = {
     ...draft,
-    orderId: `ORD-${Date.now()}`,
+    orderId,
+    referenceNumber,
     user: { id: form.user_id },
     pickup: { country: pickup.country, pincode: pickup.pincode },
     destination: { country: destination.country, pincode: destination.pincode },
@@ -259,6 +275,7 @@ const createOrderFromSubmittedForm = async (form, pickupAddress, destinationAddr
     products: Array.isArray(draft.products) ? draft.products : [],
     packages: Array.isArray(draft.packages) ? draft.packages : [],
     awb_number: awbNumber,
+    awb_label_url: labelUrl,
     carrier_shipment: normalizedCarrier.carrierShipment,
     ...(scheduledPickup ? {
       fedex_pickup: {
@@ -277,7 +294,9 @@ const createOrderFromSubmittedForm = async (form, pickupAddress, destinationAddr
     .from('orders')
     .insert({
       user_id: form.user_id,
+      customer_id: customerId,
       awb_number: awbNumber,
+      awb_pdf_url: labelUrl,
       order_data: orderData,
       carrier: normalizedCarrier,
       status: 'CREATED'
@@ -333,6 +352,7 @@ router.use((err, req, res, next) => {
 router.post('/address-forms', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    const customerId = await resolveCustomerId(req.body?.customerId);
     const maxAttempts = 10;
     let inserted = null;
 
@@ -342,6 +362,7 @@ router.post('/address-forms', authenticateToken, async (req, res) => {
         .from('order_address_forms')
         .insert({
           user_id: userId,
+          customer_id: customerId,
           code
         })
         .select('*')
@@ -377,7 +398,7 @@ router.post('/address-forms', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Create address form error:', error);
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
       error: error.message || 'Internal server error'
     });
@@ -404,6 +425,7 @@ router.post('/address-forms/order-link', authenticateToken, async (req, res) => 
       return res.status(400).json({ success: false, error: 'boxes must be a non-empty array' });
     }
 
+    const customerId = await resolveCustomerId(req.body?.customerId, orderData.customerId);
     const locations = {
       pickup: normalizeLocation(orderData.pickupCountry || orderData.sourceCountry, orderData.pickupPincode || orderData.sourcePincode, 'Pickup'),
       destination: normalizeLocation(orderData.destinationCountry, orderData.destinationPincode, 'Destination')
@@ -420,7 +442,7 @@ router.post('/address-forms/order-link', authenticateToken, async (req, res) => 
     for (let attempt = 0; attempt < 10; attempt++) {
       const { data, error } = await supabaseAdmin
         .from('order_address_forms')
-        .insert({ user_id: req.user.id, code: generate6DigitCode(), form_type: 'order', order_data: savedDraft })
+        .insert({ user_id: req.user.id, customer_id: customerId, code: generate6DigitCode(), form_type: 'order', order_data: savedDraft })
         .select('*')
         .single();
       if (!error) {
@@ -462,7 +484,7 @@ router.get('/address-forms/public/:code', async (req, res) => {
 
     const { data, error } = await supabaseAdmin
       .from('order_address_forms')
-      .select('id, code, form_type, status, is_submitted, expires_at, created_at, order_data')
+      .select('id, user_id, code, form_type, status, is_submitted, expires_at, created_at, order_data, order_id, awb_number')
       .eq('code', code)
       .single();
 
@@ -473,17 +495,36 @@ router.get('/address-forms/public/:code', async (req, res) => {
       });
     }
 
+    // A completed link becomes a read-only order page, even after form expiry.
+    if (data.status === 'ordered' || data.order_id) {
+      let query = supabaseAdmin.from('orders').select(ORDER_CUSTOMER_SELECT)
+        .eq('user_id', data.user_id);
+      if (data.order_id) {
+        query = query.eq('id', data.order_id);
+      } else {
+        // Older automatically completed links stored the association in JSON.
+        query = query.eq('order_data->>createdFromAddressFormId', data.id);
+      }
+      const { data: order, error: orderError } = await query.maybeSingle();
+      if (orderError) throw orderError;
+      if (!order) return res.status(404).json({ success: false, error: 'Linked order not found' });
+      return res.json({ success: true, data: {
+        id: data.id,
+        code: data.code,
+        form_type: data.form_type,
+        status: 'ordered',
+        is_submitted: data.is_submitted,
+        read_only: true,
+        order_id: order.id,
+        awb_number: order.awb_number,
+        ...await getOrderDetails(order)
+      } });
+    }
+
     if (data.is_submitted) {
       return res.status(400).json({
         success: false,
         error: 'Form already submitted'
-      });
-    }
-
-    if (data.status === 'ordered') {
-      return res.status(400).json({
-        success: false,
-        error: 'Form has already been used for an order'
       });
     }
 
@@ -510,6 +551,7 @@ router.get('/address-forms/public/:code', async (req, res) => {
       } : null;
     }
     delete responseData.order_data;
+    delete responseData.user_id;
     return res.json({
       success: true,
       data: responseData
@@ -619,7 +661,14 @@ router.post('/address-forms/public/:code', async (req, res) => {
         return res.status(201).json({
           success: true,
           message: 'Order created successfully',
-          data: { form: completed, order, awb_number: order.awb_number }
+          data: {
+            form: completed,
+            order,
+            awb_number: order.awb_number,
+            awb_label_url: order.awb_pdf_url || order.order_data?.awb_label_url || null,
+            reference_number: order.order_data?.referenceNumber || order.order_data?.reference_number || order.order_data?.orderId || null,
+            carrier_transaction_id: order.order_data?.carrier_shipment?.transactionId || null
+          }
         });
       } catch (error) {
         // Let the recipient retry when order creation failed after the claim.

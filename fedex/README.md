@@ -1,6 +1,6 @@
 # FedEx integration
 
-This folder contains all FedEx-specific code. Its rate function is used internally by the existing authenticated rate calculator endpoint:
+This folder contains all FedEx-specific code. Its rate function is used internally by the public rate calculator endpoint:
 
 `POST /api/shipping/quote`
 
@@ -29,7 +29,7 @@ FEDEX_CHILD_SECRET=
 FEDEX_REQUEST_TIMEOUT_MS=10000
 ```
 
-Example request to the existing rate calculator (send the app's normal Bearer JWT):
+Example request to the rate calculator (no authentication required):
 
 ```json
 {

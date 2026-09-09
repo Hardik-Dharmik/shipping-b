@@ -2,6 +2,27 @@
 
 There are multiple ways to create an admin user. Choose the method that works best for you.
 
+## Shared rate calculator and order endpoints
+
+Admin accounts use the same shipping endpoints and request bodies as regular users:
+
+| Action | Endpoint | Authentication |
+| --- | --- | --- |
+| Calculate rates | `POST /api/shipping/quote` | Public |
+| Calculate validated rates | `POST /api/shipping/quote/validated` | Public |
+| Create an order | `POST /api/shipping/order` | Admin or user login JWT |
+| List own orders | `GET /api/shipping/orders` | Admin or user login JWT |
+| Save calculator details | `POST /api/shipping/rate-calculator/save` | Admin or user login JWT |
+
+Log in with the admin account through `POST /api/auth/login` and send the returned
+token as `Authorization: Bearer <token>` for authenticated shipping requests.
+The `x-admin-token` header alone is not supported by these shipping endpoints.
+Orders and saved calculator details belong to the signed-in account, so orders
+created by an admin are stored with that admin's user ID.
+
+The admin frontend can reuse the existing calculator and create-order forms,
+including their request payloads, and allow `role: 'admin'` to access those pages.
+
 ## Method 1: Using the Node.js Script (Recommended)
 
 This is the easiest method - it will prompt you for all the details and handle password hashing automatically.
