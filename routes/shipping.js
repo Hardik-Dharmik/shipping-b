@@ -1,3 +1,4 @@
+const { hasPageAccess } = require('../utils/permissions');
 const { normalizeLinkedOrderForDisplay, getOrderDetails } = require('../utils/orderDetails');
 const { ORDER_CUSTOMER_SELECT, isCustomerId, resolveCustomerId } = require('../utils/customers');
 const express = require('express');
@@ -89,7 +90,7 @@ const uploadOrderDocuments = async (files, awbNumber, folder) => {
 
 
 // Calculate shipping quote endpoint
-router.post('/quote', async (req, res) => {
+router.post('/quote', authenticateToken, async (req, res) => {
   try {
     const input = normalizeInput(req.body);
 
@@ -123,7 +124,7 @@ router.post('/quote', async (req, res) => {
 });
 
 // Validated quote workflow: address checks -> service availability -> live rates.
-router.post('/quote/validated', async (req, res) => {
+router.post('/quote/validated', authenticateToken, async (req, res) => {
   try {
     const input = normalizeInput(req.body);
     const validationError = validateInput(input);
@@ -1806,7 +1807,7 @@ router.get('/orders/user/:userId', authenticateToken, async (req, res) => {
   const page = parsePositiveInteger(req.query.page, 1);
   const limit = parsePositiveInteger(req.query.limit, 10);
 
-  if (req.user.role !== 'admin') {
+  if (!hasPageAccess(req.user, 'user_orders')) {
     return res.status(403).json({
       success: false,
       error: 'Access denied'
@@ -1925,7 +1926,7 @@ router.get('/orders/:orderId', authenticateToken, async (req, res) => {
   try {
     const { orderId } = req.params;
     let orderQuery = supabaseAdmin.from('orders').select(ORDER_CUSTOMER_SELECT).eq('id', orderId);
-    if (req.user.role !== 'admin') orderQuery = orderQuery.eq('user_id', req.user.id);
+    if (!hasPageAccess(req.user, 'user_orders')) orderQuery = orderQuery.eq('user_id', req.user.id);
     const { data: order, error: orderError } = await orderQuery.single();
     if (orderError || !order) return res.status(404).json({ success: false, error: 'Order not found' });
 

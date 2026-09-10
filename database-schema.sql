@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS users (
   credit_application_form_url TEXT,
   trade_licence_url TEXT,
   trn_licence_url TEXT,
-  role TEXT DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+  role TEXT DEFAULT 'user' CHECK (role IN ('user', 'admin', 'employee')),
+  page_permissions TEXT[] NOT NULL DEFAULT '{}' CHECK (page_permissions <@ ARRAY['customers', 'rate_calculator', 'create_order', 'users', 'home', 'user_orders', 'kyc_requests', 'billing', 'tickets']::TEXT[]),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()) NOT NULL,
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()) NOT NULL
 );
@@ -144,7 +145,7 @@ create table if not exists tickets (
     on delete set null,
 
   created_by_role text not null default 'user'
-    check (created_by_role in ('user', 'admin')),
+    check (created_by_role in ('user', 'admin', 'employee')),
 
   created_at timestamp with time zone
     default timezone('utc', now()) not null,
@@ -197,7 +198,7 @@ ADD COLUMN IF NOT EXISTS packing_list_urls JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE tickets
   ADD COLUMN IF NOT EXISTS created_by_id uuid REFERENCES users(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS created_by_role text NOT NULL DEFAULT 'user'
-    CHECK (created_by_role IN ('user', 'admin'));
+    CHECK (created_by_role IN ('user', 'admin', 'employee'));
 
 CREATE INDEX IF NOT EXISTS tickets_created_by_role_idx
   ON tickets (created_by_role);

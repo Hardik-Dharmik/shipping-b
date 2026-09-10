@@ -1,7 +1,6 @@
 ﻿const express = require('express');
 const multer = require('multer');
 const path = require('path');
-const jwt = require('jsonwebtoken');
 const router = express.Router();
 const { authenticateToken } = require('./auth');
 const { supabaseAdmin } = require('../supabase');
@@ -38,60 +37,9 @@ const normalizeBillingType = (value) => {
   return null;
 };
 
-// Middleware to check admin access
-// Accepts both JWT token (from login) and admin token (for direct admin access)
-const isAdmin = async (req, res, next) => {
-  try {
-    // Option 1: Use JWT token from login (check if user has admin role)
-    const authHeader = req.headers['authorization'];
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7);
-
-      // Try to verify JWT token
-      try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-        // Get user from database with role
-        const { data: user, error } = await supabaseAdmin
-          .from('users')
-          .select('id, name, email, role')
-          .eq('id', decoded.userId)
-          .single();
-
-        if (!error && user && user.role === 'admin') {
-          // User is authenticated and has admin role
-          req.user = user;
-          return next();
-        }
-
-        if (!error && user && user.role !== 'admin') {
-          return res.status(403).json({
-            success: false,
-            error: 'Access denied: Admin role required'
-          });
-        }
-      } catch (jwtError) {
-        // JWT verification failed, try admin token below
-      }
-    }
-
-    // Option 2: Use admin token header (for direct admin access without login)
-    const adminToken = req.headers['x-admin-token'];
-    if (adminToken && adminToken === process.env.ADMIN_TOKEN) {
-      return next();
-    }
-
-    return res.status(401).json({
-      success: false,
-      error: 'Unauthorized: Admin access required. Provide Authorization Bearer token (from login with admin role) or x-admin-token header.'
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-};
+const { requireAdminAccess } = require('../middleware/adminAccess');
+const { hasPageAccess } = require('../utils/permissions');
+const isAdmin = requireAdminAccess('billing');
 
 router.post('/upload', isAdmin, upload.single('file'), async (req, res) => {
   try {
@@ -203,7 +151,7 @@ router.post('/upload', isAdmin, upload.single('file'), async (req, res) => {
 router.get('/uploads', authenticateToken, async (req, res) => {
   try {
     const { awb_number, type } = req.query;
-    const isAdminUser = req.user && req.user.role === 'admin';
+    const isAdminUser = hasPageAccess(req.user, 'billing');
 
     let query = supabaseAdmin
       .from('billing_uploads')

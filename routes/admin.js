@@ -1,60 +1,14 @@
 const express = require('express');
 const router = express.Router();
-const jwt = require('jsonwebtoken');
 const { supabaseAdmin } = require('../supabase');
 
-// Middleware to check admin access
-// Accepts both JWT token (from login) and admin token (for direct admin access)
-const isAdmin = async (req, res, next) => {
-  try {
-    const authHeader = req.headers['authorization'];
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7);
-
-      try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-        const { data: user, error } = await supabaseAdmin
-          .from('users')
-          .select('id, name, email, organization_code, organization_role, kyc_required, role, kyc_status')
-          .eq('id', decoded.userId)
-          .single();
-
-        if (!error && user && user.role === 'admin') {
-          req.user = user;
-          return next();
-        }
-
-        if (!error && user && user.role !== 'admin') {
-          return res.status(403).json({
-            success: false,
-            error: 'Access denied: Admin role required'
-          });
-        }
-      } catch (jwtError) {
-        // JWT verification failed, try admin token below
-      }
-    }
-
-    const adminToken = req.headers['x-admin-token'];
-    if (adminToken && adminToken === process.env.ADMIN_TOKEN) {
-      return next();
-    }
-
-    return res.status(401).json({
-      success: false,
-      error: 'Unauthorized: Admin access required. Provide Authorization Bearer token (from login with admin role) or x-admin-token header.'
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-};
+const { requireAdminAccess } = require('../middleware/adminAccess');
+const isAdmin = requireAdminAccess();
+const usersAccess = requireAdminAccess('users');
+router.use('/employees', require('./employees'));
 
 // Get all users with optional filters
-router.get('/users', isAdmin, async (req, res) => {
+router.get('/users', usersAccess, async (req, res) => {
   try {
     const search = String(req.query.search || '').trim();
     const role = String(req.query.role || '').trim();
@@ -192,7 +146,7 @@ router.get('/users', isAdmin, async (req, res) => {
 });
 
 // Get all users with their order counts
-router.get('/users-with-order-count', isAdmin, async (req, res) => {
+router.get('/users-with-order-count', usersAccess, async (req, res) => {
   try {
     let query = supabaseAdmin
       .from('users')
@@ -232,7 +186,7 @@ router.get('/users-with-order-count', isAdmin, async (req, res) => {
 });
 
 // Get single user by ID
-router.get('/users/:id', isAdmin, async (req, res) => {
+router.get('/users/:id', usersAccess, async (req, res) => {
   try {
     const { id } = req.params;
 

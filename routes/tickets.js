@@ -1,3 +1,4 @@
+const { hasPageAccess } = require('../utils/permissions');
 const express = require('express');
 const multer = require('multer');
 const crypto = require('crypto');
@@ -15,7 +16,7 @@ const upload = multer({
 
 // Middleware to check if user is admin
 const isAdmin = (req, res, next) => {
-  if (req.user && req.user.role === 'admin') {
+  if (hasPageAccess(req.user, 'tickets')) {
     next();
   } else {
     res.status(403).json({
@@ -54,7 +55,7 @@ router.post('/create', authenticateToken, async (req, res) => {
     }
 
     /* 2️⃣ Ownership check */
-    if (userRole !== 'admin' && order.user_id !== userId) {
+    if (!hasPageAccess(req.user, 'tickets') && order.user_id !== userId) {
       return res.status(403).json({
         success: false,
         error: 'You are not authorized to create a ticket for this order'
@@ -102,7 +103,7 @@ router.post('/create', authenticateToken, async (req, res) => {
       throw lastError || new Error('Failed to generate unique ticket number');
     }
 
-    if (userRole === 'admin') {
+    if (hasPageAccess(req.user, 'tickets')) {
       await supabaseAdmin
         .from('notifications')
         .insert({
@@ -265,7 +266,7 @@ router.get('/my-tickets', authenticateToken, async (req, res) => {
       query = query.lte('created_at', endOfDay.toISOString());
     }
     // Restrict only for non-admin
-    if (userRole !== 'admin') {
+    if (!hasPageAccess(req.user, 'tickets')) {
       query = query.eq('user_id', userId);
     }
 
@@ -345,7 +346,7 @@ const role = req.user.role;
       }
 
       const resetColumn =
-  role === 'admin'
+  hasPageAccess(req.user, 'tickets')
     ? 'unread_admin_count'
     : 'unread_user_count';
 
@@ -396,7 +397,7 @@ router.post(
         .select('id, status, messages, user_id, awb_number')
         .eq('id', ticketId);
 
-      if (userRole !== 'admin') {
+      if (!hasPageAccess(req.user, 'tickets')) {
         query = query.eq('user_id', userId);
       }
 
@@ -469,7 +470,7 @@ router.post(
       if (updateError) throw updateError;
 
       // Notify the other party only
-      if (userRole === 'admin') {
+      if (hasPageAccess(req.user, 'tickets')) {
         await supabaseAdmin
           .from('notifications')
           .insert({

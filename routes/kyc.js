@@ -2,7 +2,8 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const { authenticateToken } = require('./auth');
-const { isAdmin } = require('./admin');
+const { requireAdminAccess } = require('../middleware/adminAccess');
+const isAdmin = requireAdminAccess('kyc_requests');
 const { supabaseAdmin } = require('../supabase');
 
 const router = express.Router();

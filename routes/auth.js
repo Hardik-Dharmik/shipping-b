@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const { employeePageGuard, effectivePermissions } = require('../utils/permissions');
 const { supabaseAdmin } = require('../supabase');
 
 // Generate JWT token
@@ -32,7 +33,7 @@ const authenticateToken = async (req, res, next) => {
         // Get user from database
         const { data: user, error } = await supabaseAdmin
           .from('users')
-          .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url')
+          .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, page_permissions, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url')
           .eq('id', decoded.userId)
           .single();
 
@@ -45,7 +46,7 @@ const authenticateToken = async (req, res, next) => {
 
     // Attach user to request
     req.user = user;
-    next();
+    return employeePageGuard(req, res, next);
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({
@@ -69,10 +70,6 @@ const authenticateToken = async (req, res, next) => {
 // Login endpoint - works for both admin and regular users
 router.post('/login', async (req, res) => {
   try {
-    console.log(
-      "Login endpoint hit",
-      req.body
-    );
     const { email, password } = req.body;
 
     // Validate required fields
@@ -86,8 +83,8 @@ router.post('/login', async (req, res) => {
     // Get user from database
     const { data: user, error } = await supabaseAdmin
       .from('users')
-      .select('id, name, email, password_hash, company_name, organization_code, organization_role, kyc_required, role, file_url, file_name, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url')
-      .eq('email', email)
+      .select('id, name, email, password_hash, company_name, organization_code, organization_role, kyc_required, role, page_permissions, file_url, file_name, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url')
+      .eq('email', typeof email === 'string' ? email.trim().toLowerCase() : '')
       .single();
 
     if (error || !user) {
@@ -122,6 +119,7 @@ router.post('/login', async (req, res) => {
         organization_role: user.organization_role,
         kyc_required: user.kyc_required,
         role: user.role,
+        page_permissions: effectivePermissions(user),
         kyc_status: user.kyc_status,
         credit_application_form_url: user.credit_application_form_url,
         trade_licence_url: user.trade_licence_url,
@@ -167,7 +165,7 @@ router.get('/me', authenticateToken, async (req, res) => {
   try {
     const { data: userProfile, error } = await supabaseAdmin
       .from('users')
-      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, file_url, file_name, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at')
+      .select('id, name, email, company_name, organization_code, organization_role, kyc_required, role, page_permissions, file_url, file_name, kyc_status, credit_application_form_url, trade_licence_url, trn_licence_url, created_at, updated_at')
       .eq('id', req.user.id)
       .single();
 
@@ -180,7 +178,7 @@ router.get('/me', authenticateToken, async (req, res) => {
 
     res.json({
       success: true,
-      user: userProfile
+      user: { ...userProfile, page_permissions: effectivePermissions(userProfile) }
     });
 
   } catch (error) {
@@ -197,7 +195,7 @@ router.post('/verify-token', authenticateToken, (req, res) => {
   res.json({
     success: true,
     message: 'Token is valid',
-    user: req.user
+    user: { ...req.user, page_permissions: effectivePermissions(req.user) }
   });
 });
 
