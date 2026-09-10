@@ -4,6 +4,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const router = express.Router();
+router.use(require('./manualOrders'));
 const { authenticateToken } = require('./auth');
 const { supabaseAdmin } = require('../supabase');
 const generateOrderPdf = require('../utils/generateOrderPdf');

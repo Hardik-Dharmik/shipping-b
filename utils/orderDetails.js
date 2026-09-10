@@ -47,6 +47,9 @@ const normalizeLinkedOrderForDisplay = (order) => {
 
 
 const getOrderDetails = async (order) => {
+    if (order?.order_data?.orderType === 'manual') {
+      return { order, pickup: null, costBreakdown: null, carrierCostBreakdown: null };
+    }
     const { data: pickup, error: pickupError } = await supabaseAdmin
       .from('pickups')
       .select('id, order_id, awb_number, carrier, carrier_confirmation_code, carrier_location_code, scheduled_date, status, request_data, created_at, updated_at, cancelled_at')
