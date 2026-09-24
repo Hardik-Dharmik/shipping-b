@@ -48,6 +48,23 @@ function optionalAddress(address = {}) {
   return result;
 }
 
+function rateAddress(party = {}) {
+  const address = { countryCode: countryCode(party.countryCode), ...optionalAddress(party) };
+  const postalCode = String(party.postalCode || '').trim();
+  // Older calculator clients put the UAE city in the pincode field.
+  if (address.countryCode === 'AE' && /\p{L}/u.test(postalCode) && !/\d/.test(postalCode)) {
+    if (!address.city) address.city = postalCode;
+  } else if (postalCode) {
+    address.postalCode = postalCode;
+  }
+  // FedEx rate validation requires a non-null postal code even for UAE.
+  // Only supply the non-postal-country placeholder when a city is known.
+  if (address.countryCode === 'AE' && address.city && !address.postalCode) {
+    address.postalCode = '00000';
+  }
+  return address;
+}
+
 function currentShipDate() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -65,8 +82,8 @@ function transitDays(commit = {}) {
 }
 
 function validateRateInput(body = {}) {
-  const shipper = body.shipper || {};
-  const recipient = body.recipient || {};
+  const shipper = rateAddress(body.shipper || {});
+  const recipient = rateAddress(body.recipient || {});
   const packages = Array.isArray(body.packages) && body.packages.length
     ? body.packages
     : [body.package || body];
@@ -76,7 +93,11 @@ function validateRateInput(body = {}) {
     if (!COUNTRY_CODE.test(countryCode(party.countryCode))) {
       errors.push(`${label}.countryCode must be a two-letter ISO country code`);
     }
-    if (!String(party.postalCode || '').trim()) errors.push(`${label}.postalCode is required`);
+    if (!party.postalCode && !(party.countryCode === 'AE' && party.city)) {
+      errors.push(party.countryCode === 'AE'
+        ? `${label}.city or postalCode is required for UAE`
+        : `${label}.postalCode is required`);
+    }
   }
 
   if (packages.length > 25) errors.push('FedEx supports a maximum of 25 packages per rate request');
@@ -132,21 +153,13 @@ function toFedExPayload(body) {
 
   const payload = {
     accountNumber: { value: fedexConfig.accountNumber },
-    returnTransitTimes: true,
+    returnTransitTimes: body.returnTransitTimes !== false,
     requestedShipment: {
       shipper: {
-        address: {
-          postalCode: String(shipper.postalCode).trim(),
-          countryCode: countryCode(shipper.countryCode),
-          ...optionalAddress(shipper)
-        }
+        address: shipper
       },
       recipient: {
-        address: {
-          postalCode: String(recipient.postalCode).trim(),
-          countryCode: countryCode(recipient.countryCode),
-          ...optionalAddress(recipient)
-        }
+        address: recipient
       },
       pickupType: body.pickupType || 'USE_SCHEDULED_PICKUP',
       shipDateStamp: body.shipDateStamp || currentShipDate(),
@@ -156,9 +169,14 @@ function toFedExPayload(body) {
   };
 
   if (body.serviceType) payload.requestedShipment.serviceType = body.serviceType;
-  if (body.packagingType) payload.requestedShipment.packagingType = body.packagingType;
+  payload.requestedShipment.packagingType = body.packagingType || 'YOUR_PACKAGING';
   if (body.includePickupRates) payload.processingOptions = ['INCLUDE_PICKUPRATES'];
-  if (CURRENCY_CODE.test(shipmentCurrency)) payload.preferredCurrency = shipmentCurrency;
+  if (CURRENCY_CODE.test(shipmentCurrency)) {
+    payload.requestedShipment.preferredCurrency = shipmentCurrency;
+    payload.requestedShipment.rateRequestType = [...new Set([
+      ...payload.requestedShipment.rateRequestType, 'PREFERRED'
+    ])];
+  }
 
   const originCountry = countryCode(shipper.countryCode);
   const destinationCountry = countryCode(recipient.countryCode);
@@ -197,6 +215,8 @@ function normalizeRateResponse(response) {
     alerts: response.output?.alerts || [],
     quotes: rateReplyDetails.map((detail) => {
       const ratedShipment = detail.ratedShipmentDetails?.find(
+        (item) => item.rateType === 'PREFERRED' || item.rateType === 'PAYOR_PREFERRED_PACKAGE' || item.rateType === 'PAYOR_PREFERRED_SHIPMENT'
+      ) || detail.ratedShipmentDetails?.find(
         (item) => item.rateType === 'ACCOUNT' || item.rateType === 'PAYOR_ACCOUNT_PACKAGE'
       ) || detail.ratedShipmentDetails?.[0] || {};
       const shipmentRateDetail = ratedShipment.shipmentRateDetail || {};
@@ -271,9 +291,12 @@ function serviceAvailabilityPayload(ratePayload) {
 
 async function calculateValidatedRates(body) {
   const payload = toFedExPayload(body);
+  const validateAddress = (address) => address.countryCode === 'AE'
+    ? Promise.resolve({ skipped: true, reason: 'UAE addresses do not require postal-code validation' })
+    : validatePostalCode(postalPayload(address));
   const [origin, destination] = await Promise.all([
-    validatePostalCode(postalPayload(payload.requestedShipment.shipper.address)),
-    validatePostalCode(postalPayload(payload.requestedShipment.recipient.address))
+    validateAddress(payload.requestedShipment.shipper.address),
+    validateAddress(payload.requestedShipment.recipient.address)
   ]);
   const availability = await getServiceAvailability(serviceAvailabilityPayload(payload));
   const rates = await getRateQuote(payload);
@@ -304,11 +327,13 @@ function toCalculatorRateRequest(input) {
   return {
     shipper: {
       countryCode: input.pickupCountry,
-      postalCode: input.pickupPincode
+      postalCode: input.pickupPincode,
+      city: input.pickupCity || input.pickupAddress?.city
     },
     recipient: {
       countryCode: input.destinationCountry,
-      postalCode: input.destinationPincode
+      postalCode: input.destinationPincode,
+      city: input.destinationCity || input.destinationAddress?.city
     },
     packages: packages.length ? packages : [{
       weight: input.weight,
@@ -325,7 +350,10 @@ function toCalculatorRateRequest(input) {
     currency: input.currency || 'AED',
     commodityDescription: input.commodityDescription || input.products?.[0]?.description || input.products?.[0]?.name,
     serviceType: input.serviceType || input.carrier?.serviceType,
-    returnTransitTimes: true
+    packagingType: input.packagingType || input.carrier?.packagingType,
+    rateRequestType: input.rateRequestType,
+    shipDateStamp: input.shipDateStamp,
+    returnTransitTimes: input.returnTransitTimes !== false
   };
 }
 

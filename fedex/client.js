@@ -24,7 +24,8 @@ async function readResponse(response) {
 function createFedExError(message, response, body) {
   const details = body?.errors?.map((item) => ({
     code: item.code,
-    message: item.message
+    message: item.message,
+    ...(item.parameterList ? { parameterList: item.parameterList } : {})
   })) || [];
   const fedexMessage = details.map((item) => item.message).filter(Boolean).join('; ');
   const error = new Error(fedexMessage || body?.message || message);
@@ -36,13 +37,13 @@ function createFedExError(message, response, body) {
 }
 
 function logFedExFailure(path, response, body) {
-  console.error('FedEx API request failed', {
+  console.error('FedEx API request failed', JSON.stringify(redactForLog({
     path,
     status: response.status,
     transactionId: body?.transactionId,
     errors: body?.errors || [],
     message: body?.message
-  });
+  }), null, 2));
 }
 
 function redactForLog(value, key = '') {

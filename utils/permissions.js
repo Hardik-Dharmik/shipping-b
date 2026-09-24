@@ -20,6 +20,7 @@ const effectivePermissions = user => user.role === 'admin' ? PAGE_KEYS :
 function pagesForRequest(req) {
   const path = (req.originalUrl || '').split('?')[0];
   if (path.startsWith('/api/auth/')) return null;
+  if (/^\/api\/analytics(\/|$)/.test(path)) return ['home'];
   if (path.startsWith('/api/admin/users')) return ['users'];
   if (path === '/api/customers' || path === '/api/customers/') return ['customers'];
   if (path.startsWith('/api/customers/')) return ['customers', 'create_order'];

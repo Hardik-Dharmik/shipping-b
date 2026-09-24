@@ -2,7 +2,6 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const router = express.Router();
-const { authenticateToken } = require('./auth');
 
 const countryCodesPath = path.join(__dirname, '../data/countryCodes.json');
 let countryCodes = [];
@@ -172,7 +171,7 @@ const createCountrySuggestionHandler = async (req, res) => {
   }
 };
 
-router.get('/city-suggestions', authenticateToken, createSuggestionHandler('city'));
+router.get('/city-suggestions', createSuggestionHandler('city'));
 router.get('/pincode-suggestions', createSuggestionHandler('postcode'));
 router.get('/country-suggestions', createCountrySuggestionHandler);
 

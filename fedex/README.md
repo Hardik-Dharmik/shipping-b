@@ -34,15 +34,18 @@ Example request to the rate calculator (no authentication required):
 ```json
 {
   "pickupCountry": "UAE",
-  "pickupPincode": "00000",
+  "pickupCity": "Dubai",
   "destinationCountry": "USA",
   "destinationPincode": "10001",
   "actualWeight": 2.5,
+  "shipmentValue": 2000,
   "length": 30,
   "breadth": 20,
   "height": 15
 }
 ```
+
+For UAE rate quotes, send `pickupCity` or `destinationCity`; a postal code is optional. Legacy UAE values such as `pickupPincode: "Dubai"` are converted to a city in the FedEx payload. When a UAE city is provided without a postal code, outbound FedEx rate and service-availability requests use `postalCode: "00000"` to satisfy the required field. Explicit postal codes remain unchanged. See [FedEx postal-code fallback guidance](https://developer.fedex.com/api/en-us/catalog/postal-code/docs.html). Other countries still require postal codes. The validated quote flow skips UAE postal-code validation and retains service-availability checks. Set `returnTransitTimes: false` to request rates without transit times.
 
 The integration caches the OAuth token in process memory and adds live FedEx service quotes to the rate calculator response. FedEx credentials stay server-side and are never returned to the client.
 

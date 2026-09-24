@@ -1,4 +1,5 @@
 const { hasPageAccess } = require('../utils/permissions');
+const { withRateResponseDefaults } = require('../utils/rateResponseDefaults');
 const { normalizeLinkedOrderForDisplay, getOrderDetails } = require('../utils/orderDetails');
 const { ORDER_CUSTOMER_SELECT, isCustomerId, resolveCustomerId } = require('../utils/customers');
 const express = require('express');
@@ -15,7 +16,7 @@ const {
   getOfferMessages,
   getRatePerKg
 } = require('../utils/chargeableWeightOffers');
-const { calculateCalculatorRates, calculateValidatedCalculatorRates } = require('../fedex/rateService');
+const { calculateCalculatorRates, calculateValidatedCalculatorRates, resolveCountryCode } = require('../fedex/rateService');
 const { createFedExShipment, buildParty } = require('../fedex/shipmentService');
 const { uploadFedExLabel } = require('../fedex/labelStorage');
 const { scheduleFedExPickup, cancelFedExPickup } = require('../fedex/pickupService');
@@ -294,9 +295,16 @@ function normalizeInput(body) {
   );
   return {
     pickupCountry: body.pickupCountry?.trim(),
-    pickupPincode: body.pickupPincode,
+    pickupPincode: body.pickupPincode || (resolveCountryCode(body.pickupCountry) === 'AE' ? body.pickupCity : undefined),
+    pickupCity: body.pickupCity,
     destinationCountry: body.destinationCountry?.trim(),
-    destinationPincode: body.destinationPincode,
+    destinationPincode: body.destinationPincode || (resolveCountryCode(body.destinationCountry) === 'AE' ? body.destinationCity : undefined),
+    destinationCity: body.destinationCity,
+    returnTransitTimes: body.returnTransitTimes !== false,
+    currency: body.currency,
+    packagingType: body.packagingType,
+    rateRequestType: body.rateRequestType,
+    shipDateStamp: body.shipDateStamp,
     weight: parseFloat(body.actualWeight),
     dimensions: parseDimensions(body),
     boxes: parseBoxes(body.boxes),
@@ -694,7 +702,7 @@ function buildResponse(input, quotes) {
     boxes: input.boxes
   });
 
-  return {
+  return withRateResponseDefaults({
     pickup: {
       country: input.pickupCountry,
       pincode: input.pickupPincode
@@ -721,7 +729,7 @@ function buildResponse(input, quotes) {
     offers,
     quotes,
     calculatedAt: new Date().toISOString()
-  };
+  });
 }
 
 const parseOrderData = (req) => {
@@ -1937,4 +1945,3 @@ router.get('/orders/:orderId', authenticateToken, async (req, res) => {
 });
 
 module.exports = router;
-

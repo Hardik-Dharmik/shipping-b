@@ -37,6 +37,7 @@ app.use(express.urlencoded({
 app.use("/api/register", registerRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/analytics", require("./routes/analytics"));
 app.use("/api/shipping", shippingRoutes);
 app.use("/api/tickets", ticketRoutes);
 app.use("/api/billing", billingRoutes);
