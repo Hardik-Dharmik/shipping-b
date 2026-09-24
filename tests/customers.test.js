@@ -95,6 +95,18 @@ test('customer resolver inherits a link selection and rejects substitutions and 
   await assert.rejects(resolveCustomerId('100000'), { statusCode: 404 });
 });
 
+test('orders list shows all orders to admins and keeps regular users scoped to their own orders', async () => {
+  for (const role of ['admin', 'user', 'employee']) {
+    reset({ data: [], count: 21, error: null });
+    const response = await request('/api/shipping/orders?page=2&limit=10', { headers: { 'x-role': role } });
+    assert.equal(response.status, 200);
+    const ownerFilters = calls[0].operations.filter(op => op[0] === 'eq' && op[1] === 'user_id');
+    assert.deepEqual(ownerFilters, role === 'admin' ? [] : [['eq', 'user_id', 'user-a']]);
+    assert.deepEqual(calls[0].operations.find(op => op[0] === 'range'), ['range', 10, 19]);
+    assert.equal(response.body.pagination.total, 21);
+  }
+});
+
 test('both order lists filter by customer and include customer details without excluding legacy orders', async () => {
   for (const path of ['/api/shipping/orders', '/api/shipping/orders/user/user-a']) {
     reset({ data: [{ id: 'order-a', customer_id: '100000', customer: { company_name: 'Acme' } }], count: 1, error: null });

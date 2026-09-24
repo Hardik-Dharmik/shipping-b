@@ -1722,8 +1722,9 @@ router.get('/orders', authenticateToken, async (req, res) => {
 
   let query = supabaseAdmin
     .from('orders')
-    .select(ORDER_CUSTOMER_SELECT, { count: 'exact' })
-    .eq('user_id', userId);
+    .select(ORDER_CUSTOMER_SELECT, { count: 'exact' });
+
+  if (req.user.role !== 'admin') query = query.eq('user_id', userId);
 
   if (customerId) query = query.eq('customer_id', customerId);
 
